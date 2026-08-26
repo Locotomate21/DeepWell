@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oilai"
+version = "0.1.0"
+description = "Pronóstico de producción de campos petroleros de Colombia con modelos híbridos física + IA"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Locotomate21" }]
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "pyarrow>=17.0",
+    "requests>=2.32",
+    "scipy>=1.14",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+modelos = ["lightgbm>=4.5", "xgboost>=2.1", "statsmodels>=0.14", "torch>=2.4"]
+app = ["streamlit>=1.39", "plotly>=5.24"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+oilai = "oilai.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Datos derivados: se regeneran con `python -m oilai.pipeline`.
+# El snapshot crudo en data/raw/ SÍ se versiona: la ANH revisa cifras
+# retroactivamente y la tesis debe poder reproducirse con los datos exactos.
+data/processed/
+reports/*.parquet
+
+# Salidas locales
+*.log
