@@ -1,4 +1,4 @@
-# Metodología — Fase 1
+# Metodología
 
 Documento de decisiones metodológicas y su justificación. Cada decisión que
 afecta los resultados queda registrada aquí, junto con la alternativa que se
@@ -181,7 +181,113 @@ y en los campos de más de 50 000 bpd.
 
 ---
 
-## 5. Limitaciones declaradas
+## 5. Análisis exploratorio y segmentación (Fase 2)
+
+El propósito de esta fase no es descriptivo sino explicativo: entender **por qué**
+el benchmark de la Fase 1 dio los resultados que dio, y decidir dónde vale la
+pena concentrar el modelado.
+
+### 5.1 Descriptores por campo
+
+Cada campo con al menos 24 meses de historia se resume en cuatro descriptores,
+todos calculables usando únicamente datos pasados (requisito para que puedan
+alimentar un modelo sin fuga temporal):
+
+| Descriptor | Definición | Por qué |
+|---|---|---|
+| Tamaño | media histórica de bpd, en log₁₀ | Abarca cinco órdenes de magnitud; en escala lineal los campos grandes dominarían cualquier distancia euclídea. |
+| Declinación anual | 1 − exp(−Di·12), en % | `Di` de Arps es una tasa nominal instantánea, poco intuitiva. La declinación efectiva anual es como la industria reporta el agotamiento. |
+| Volatilidad | desviación estándar de Δlog(q) | Adimensional, comparable entre un campo de 120 000 bpd y uno de 50 bpd. Es el indicador más directo del error irreducible de pronóstico. |
+| Madurez | caudal actual / caudal pico | Distingue un campo en meseta (≈1) de uno casi agotado (≈0). |
+
+El ajuste de Arps para la declinación usa la ventana de 36 meses, la misma que
+resultó ganadora en la Fase 1.
+
+### 5.2 Campos activos frente a campos históricos
+
+**162 de 456 campos caracterizados (36 %) llevan más de tres meses sin reportar.**
+Se marcan con `activo` y el umbral de tres meses absorbe el rezago habitual de
+publicación de la ANH sin dar por vivo un campo cerrado hace años.
+
+La distinción no es cosmética. Calcular la cuota de producción de un segmento
+sumando la **media histórica** de todos sus campos sobrerrepresenta a los ya
+cerrados: el segmento «Núcleo estable» aparecía con un 75 % de la producción
+cuando su cuota real sobre producción actual es del **88 %**. Todas las cuotas
+del proyecto se calculan sobre producción actual de campos activos.
+
+### 5.3 Detección de meses con publicación incompleta
+
+Noviembre de 2025 aparece en los datos con 93 campos reportando frente a una
+mediana de ~300, y un agregado nacional de 184 000 bpd contra los ~750 000
+habituales. No es una caída de producción: los campos que sí reportaron ese mes
+traen valores normales (Chichimene 35 477 bpd, contra 37 463 el mes anterior);
+**faltan las filas** de los demás.
+
+La detección compara el número de campos que reportan cada mes contra una
+mediana móvil centrada de 13 meses, que absorbe la tendencia de largo plazo —el
+número de campos activos baja con los años— sin dejarse arrastrar por el mes
+anómalo. Un mes por debajo del 70 % de esa referencia se marca como incompleto y
+se excluye de toda serie agregada.
+
+**Alcance del defecto.** Solo afecta a los agregados. Las series por campo no se
+corrompen: los valores publicados son correctos y la ausencia de un mes ya
+quedaba registrada como hueco en la Fase 1, con `meses_desde_inicio` respetando
+la distancia temporal real. Por eso los resultados del benchmark de la Fase 1 no
+requieren recálculo.
+
+### 5.4 Segmentación
+
+Agrupamiento *k*-medias sobre los cuatro descriptores estandarizados.
+
+**Recortes en vez de exclusiones.** La declinación se acota a [0, 60] % anual y
+la volatilidad a [0, 2]. No se elimina ningún campo: uno con 200 % de declinación
+aparente sigue siendo un campo agotándose y debe clasificarse, pero sin capturar
+los centroides. El recorte es visible en las figuras como acumulación en el borde
+superior, y así se anota.
+
+**Elección de k.** La silueta media es máxima en k = 2 (0.296) y decrece
+suavemente: 0.285 en k = 3, **0.261 en k = 4**, 0.229 en k = 5. Se adopta k = 4
+por interpretabilidad operativa —los cuatro grupos corresponden a regímenes que
+un ingeniero de producción reconoce— aceptando el costo en silueta.
+
+**Declaración honesta:** una silueta de 0.26 indica grupos **interpretables pero
+no netamente separados**. Es lo esperable en un fenómeno continuo: no hay cuatro
+clases naturales de campo petrolero, hay un espectro. Los segmentos se reportan
+como una partición útil para decidir estrategia de modelado, no como una
+taxonomía descubierta en los datos.
+
+**Nombres reproducibles.** Los índices que devuelve *k*-medias son arbitrarios y
+cambian entre corridas. Los segmentos se nombran por reglas sobre las medianas
+de sus descriptores, de modo que la etiqueta sea auditable y estable:
+
+- declinación ≥ 25 % → «En agotamiento»
+- volatilidad ≥ 0.45 → «Marginal errático»
+- madurez ≥ 0.45 y declinación < 5 % → «Núcleo estable»
+- resto → «Maduro en declinación»
+
+**Campos representativos.** Se elige el campo más cercano al centroide en el
+espacio estandarizado, no el de producción mediana: el campo mediano en tamaño
+puede ser atípico en declinación o volatilidad y resultaría engañoso como
+ilustración. La búsqueda se restringe además a campos activos, porque ilustrar un
+segmento con un campo que dejó de reportar en 2021 induce a error.
+
+### 5.5 Diseño de las figuras
+
+La paleta categórica de referencia se validó con el script de verificación
+correspondiente. Resultado relevante: con cuatro segmentos, los cuatro colores
+**no** superan el piso de discriminación cuando todos los pares coexisten en el
+mismo plano —amarillo y naranja quedan en ΔE 13.7, bajo el piso de 15 para visión
+normal—. Por eso las figuras que comparan los cuatro segmentos usan *small
+multiples*: un segmento por panel, un solo color por panel y el resto de campos
+en gris de contexto.
+
+Dos de los colores quedan por debajo de 3:1 de contraste contra el fondo claro,
+así que cada panel lleva su nombre como rótulo directo: la identidad nunca
+depende solo del color. Ninguna figura usa ejes dobles.
+
+---
+
+## 6. Limitaciones declaradas
 
 1. **Granularidad de campo.** Las curvas agregadas mezclan pozos en distintas
    etapas de su vida. Los resultados no son extrapolables a pozo individual sin
@@ -198,10 +304,18 @@ y en los campos de más de 50 000 bpd.
 5. **Los campos con menos de 36 meses quedan fuera** (183 de 608). Son campos
    nuevos o de vida corta, y su exclusión sesga la muestra evaluada hacia campos
    consolidados.
+6. **La segmentación tiene silueta baja** (0.26). Los grupos son interpretables
+   pero no netamente separados; un campo cerca de una frontera podría cambiar de
+   segmento ante pequeñas variaciones de sus descriptores.
+7. **El horizonte del backtesting se cuenta en observaciones, no en meses de
+   calendario.** En un campo con huecos de reporte, doce pasos abarcan más de
+   doce meses. Los instantes `t` que reciben los modelos sí son correctos, de
+   modo que las predicciones se emiten en el momento debido, pero la etiqueta
+   «h = 12» no equivale a un año exacto en esos campos.
 
 ---
 
-## 6. Reproducibilidad
+## 7. Reproducibilidad
 
 ```bash
 python -m pip install -e ".[dev]"

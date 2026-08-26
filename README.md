@@ -87,6 +87,84 @@ margen amplio de mejora**, y ese es el espacio que ocupan las fases 3 y 4. El
 cruce entre régimen estadístico (corto plazo) y régimen físico (largo plazo,
 campos grandes) es la motivación directa del modelo híbrido.
 
+## Resultados de la Fase 2
+
+El análisis exploratorio no describe por describir: **explica el resultado de la
+Fase 1** y define dónde debe concentrarse el modelado.
+
+### Por qué ningún modelo baja de MASE 1
+
+La volatilidad mensual de un campo cae de forma sostenida con su tamaño: de
+≈ 0.63 en el decil más pequeño a ≈ 0.11 en el más grande. Buena parte del error
+en los campos pequeños es **irreducible**, no un defecto del modelo.
+
+| Clase de campo | Declinación anual | Volatilidad | Madurez |
+|---|---|---|---|
+| < 500 bpd | 15.5 % | 0.51 | 0.14 |
+| 0.5–5k bpd | 7.5 % | 0.22 | 0.31 |
+| 5–50k bpd | 3.6 % | 0.15 | 0.50 |
+| > 50k bpd | 3.2 % | 0.03 | 0.56 |
+
+Los campos grandes declinan despacio y con poco ruido — exactamente el régimen
+donde Arps ganaba en el benchmark.
+
+### La producción está muy concentrada
+
+De 608 campos del histórico, **294 siguen activos**. En 2025 producen 760 798 bpd
+y la concentración es extrema:
+
+- **10 campos = 51 %** de la producción nacional
+- 50 campos = 84 %
+- **Ecopetrol opera el 60.4 %**; el HHI por operadora es **4 031** (por encima de
+  2 500 se considera un mercado altamente concentrado)
+- **Meta aporta el 56.6 %**, seguido de Casanare (14.5 %) y Arauca (6.6 %)
+
+### Cuatro segmentos de comportamiento
+
+Agrupamiento *k*-medias sobre cuatro descriptores calculables solo con datos
+pasados (tamaño en log, declinación, volatilidad, madurez):
+
+| Segmento | Campos | Activos | Declinación | Volatilidad | Madurez | % producción actual |
+|---|---|---|---|---|---|---|
+| **Núcleo estable** | 99 | 83 | 1.5 % | 0.18 | 0.64 | **88.2 %** |
+| Maduro en declinación | 179 | 135 | 8.5 % | 0.20 | 0.23 | 10.0 % |
+| Marginal errático | 101 | 41 | 11.8 % | 0.75 | 0.09 | 1.2 % |
+| En agotamiento | 77 | 35 | 47.4 % | 0.51 | 0.04 | 0.6 % |
+
+**83 campos activos producen el 88 % del crudo del país.** Son estables, poco
+volátiles y de declinación lenta: el segmento donde un buen pronóstico tiene
+valor económico real y donde la Fase 4 debe concentrar el esfuerzo.
+
+La silueta media es 0.26 (k = 4), modesta: los segmentos son **interpretables
+pero no netamente separados**, algo esperable en un fenómeno continuo. Se
+reportan como una partición útil, no como clases naturales.
+
+### Dos defectos de datos detectados y corregidos
+
+1. **Noviembre de 2025 es un mes de publicación incompleta**: solo 93 campos
+   reportan frente a ~300 habituales, y el agregado nacional cae a 184 000 bpd.
+   No es una caída real —los campos que sí reportaron traen valores normales—,
+   faltan las filas de los demás. Se detecta automáticamente comparando la
+   cobertura mensual contra una mediana móvil y se excluye de toda serie
+   agregada.
+2. **El 36 % de los campos del histórico ya no reporta.** Calcular cuotas de
+   producción sobre la media histórica de todos los campos sobrerrepresenta a
+   los cerrados: el núcleo estable pasaba de un 88 % real a un 75 % aparente.
+   Las cuotas se calculan sobre producción actual de campos activos.
+
+### Figuras
+
+Generadas en `reports/figures/` por `oilai eda`:
+
+| Figura | Contenido |
+|---|---|
+| `01_produccion_nacional.png` | Producción del país 2014–2026, con el mínimo COVID anotado |
+| `02_concentracion.png` | Curva acumulada: 10 campos explican la mitad de la producción |
+| `03_volatilidad_vs_tamano.png` | Por qué los campos pequeños no son pronosticables |
+| `04_segmentos.png` | Los cuatro segmentos en el plano madurez–declinación |
+| `05_mapa_campos.png` | Distribución geográfica, área ∝ producción |
+| `06_curvas_ejemplo.png` | Un campo representativo de cada segmento |
+
 ## Instalación
 
 ```bash
@@ -104,10 +182,11 @@ python -m pip install -e ".[modelos,app]"
 ## Uso
 
 ```bash
-oilai all              # pipeline completo: descarga -> panel -> benchmark
+oilai all              # pipeline completo: descarga -> panel -> benchmark -> EDA
 oilai ingest           # solo descarga el histórico de la ANH
 oilai panel            # solo reconstruye el panel limpio
 oilai benchmark        # solo corre el backtesting
+oilai eda              # caracteriza, segmenta y regenera las figuras
 oilai all --force      # ignora la caché y recalcula todo
 ```
 
@@ -117,7 +196,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest
+python -m pytest    # 74 pruebas
 ```
 
 ## Estructura
@@ -128,15 +207,19 @@ src/oilai/
 ├── ingest.py           descarga paginada desde la API Socrata
 ├── clean.py            panel mensual: agregación, bpd, edad productiva
 ├── evaluate.py         backtesting walk-forward y métricas
+├── eda.py              caracterización de campos y agregados nacionales
+├── segmentacion.py     agrupamiento de campos por comportamiento
+├── figuras.py          figuras del análisis exploratorio
 ├── pipeline.py         orquestador (comando `oilai`)
 ├── run_benchmark.py    benchmark sobre todos los campos
 └── models/
     ├── arps.py         declinación exponencial, hiperbólica y armónica
     └── baselines.py    Naive, media móvil, drift, Arps
 
-tests/                  34 pruebas, incluida la de ausencia de fuga temporal
+tests/                  74 pruebas, incluida la de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
+reports/figures/        figuras generadas por `oilai eda`
 ```
 
 ## Hoja de ruta
@@ -144,7 +227,7 @@ data/raw/               snapshot versionado de los datos de la ANH
 | Fase | Contenido | Estado |
 |---|---|---|
 | **1. Fundación de datos y línea base** | Ingesta, panel, Arps, baselines, backtesting, pruebas | ✅ **completa** |
-| 2. Análisis exploratorio | Caracterización de los 608 campos, figuras, mapa, segmentación | pendiente |
+| **2. Análisis exploratorio** | Caracterización de los 608 campos, figuras, mapa, segmentación | ✅ **completa** |
 | 3. Modelo global de ML | Features + LightGBM multi-horizonte sobre todos los campos | pendiente |
 | 4. Modelo híbrido física + ML | Arps + ML sobre residuales — aporte original | pendiente |
 | 5. Incertidumbre y anomalías | Intervalos de predicción, detección de caídas atípicas | pendiente |
