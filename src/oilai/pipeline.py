@@ -4,7 +4,8 @@
     oilai panel       construye el panel mensual limpio
     oilai benchmark   corre el backtesting walk-forward de las líneas base
     oilai eda         caracteriza los campos, los segmenta y genera las figuras
-    oilai all         las cuatro, en orden
+    oilai ml          entrena y evalúa el modelo global de aprendizaje
+    oilai all         las cinco, en orden
 
 Cada etapa cachea su salida, así que volver a correr `all` es barato: solo
 recalcula lo que falte. Con `--force` se rehace todo desde cero.
@@ -29,7 +30,7 @@ def _titulo(texto: str) -> None:
 
 
 def etapa_ingest(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 1/4 · Descarga del histórico ANH")
+    _titulo("ETAPA 1/5 · Descarga del histórico ANH")
     t0 = time.perf_counter()
     df = download(force=force)
     origen = "descargado" if force or not RAW_PARQUET.exists() else "caché"
@@ -39,7 +40,7 @@ def etapa_ingest(force: bool) -> pd.DataFrame:
 
 
 def etapa_panel(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 2/4 · Construcción del panel mensual")
+    _titulo("ETAPA 2/5 · Construcción del panel mensual")
     t0 = time.perf_counter()
     panel = build_panel(force=force)
     print(f"{len(panel):,} filas · {panel.campo.nunique()} campos · "
@@ -51,7 +52,7 @@ def etapa_panel(force: bool) -> pd.DataFrame:
 
 
 def etapa_benchmark(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 3/4 · Backtesting walk-forward de líneas base")
+    _titulo("ETAPA 3/5 · Backtesting walk-forward de líneas base")
     destino = REPORTS / "backtest_base.parquet"
 
     if destino.exists() and not force:
@@ -76,7 +77,7 @@ def etapa_benchmark(force: bool) -> pd.DataFrame:
 
 
 def etapa_eda(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 4/4 · Caracterización, segmentación y figuras")
+    _titulo("ETAPA 4/5 · Caracterización, segmentación y figuras")
 
     from .eda import caracterizar_campos, cobertura_mensual, concentracion, indice_hhi
     from .figuras import generar_todas
@@ -128,6 +129,58 @@ def etapa_eda(force: bool) -> pd.DataFrame:
     return campos
 
 
+def etapa_ml(force: bool) -> pd.DataFrame:
+    _titulo("ETAPA 5/5 · Modelo global de aprendizaje automático")
+
+    from .backtest_global import CORTES, main as correr_global
+    from .evaluate import resumen
+    from .figuras import generar_fase3
+
+    destino = REPORTS / "backtest_global.parquet"
+    t0 = time.perf_counter()
+
+    if destino.exists() and not force:
+        df = pd.read_parquet(destino)
+        print(f"{len(df):,} predicciones (caché)")
+    else:
+        cortes = ", ".join(f"{c:%Y-%m}" for c in CORTES)
+        print(f"cortes de calendario: {cortes}")
+        df = correr_global()
+        print(f"entrenamiento y evaluación en {time.perf_counter() - t0:.1f}s")
+
+    print(f"{len(df):,} predicciones · {df.campo.nunique()} campos · "
+          f"{df.modelo.nunique()} modelos")
+    print()
+
+    tabla = resumen(df).round(3)
+    print("Ranking bajo orígenes de calendario (menor MASE es mejor):")
+    print(tabla.to_string())
+
+    df = df.copy()
+    df["mase"] = (df.y - df.yhat).abs() / df.escala
+    piv = df.pivot_table(index="modelo", columns="h", values="mase", aggfunc="mean")
+    print()
+    print("MASE por horizonte:")
+    print(piv[[1, 3, 6, 9, 12]].round(3).sort_values(12).to_string())
+
+    ventaja = (piv.loc["Naive"] - piv.loc["ML-global"]) / piv.loc["Naive"] * 100
+    cruce = next((h for h in piv.columns if ventaja[h] > 0), None)
+    print()
+    if cruce is not None:
+        print(f"El modelo global supera al Naive a partir del horizonte {cruce} "
+              f"(ventaja de {ventaja.iloc[-1]:+.1f}% a 12 meses).")
+    else:
+        print("El modelo global no supera al Naive en ningún horizonte.")
+
+    tabla.to_csv(REPORTS / "ranking_global.csv")
+    piv.to_csv(REPORTS / "mase_por_horizonte.csv")
+
+    rutas = generar_fase3()
+    print(f"{len(rutas)} figuras generadas en {FIGURES}")
+    print(f"-> {REPORTS / 'ranking_global.csv'}")
+    return df
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="oilai",
@@ -135,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "etapa",
-        choices=["ingest", "panel", "benchmark", "eda", "all"],
+        choices=["ingest", "panel", "benchmark", "eda", "ml", "all"],
         help="etapa a ejecutar",
     )
     parser.add_argument(
@@ -153,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         etapa_benchmark(args.force)
     if args.etapa in ("eda", "all"):
         etapa_eda(args.force)
+    if args.etapa in ("ml", "all"):
+        etapa_ml(args.force)
 
     print("\nListo.")
     return 0

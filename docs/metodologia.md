@@ -287,7 +287,140 @@ depende solo del color. Ninguna figura usa ejes dobles.
 
 ---
 
-## 6. Limitaciones declaradas
+## 6. Modelo global de aprendizaje automático (Fase 3)
+
+### 6.1 Por qué un modelo global
+
+Las fases anteriores ajustaban un modelo por campo. Un modelo **global** entrena
+un único estimador con las observaciones de los 452 campos a la vez. La hipótesis
+es que los campos comparten estructura —cómo declina un campo maduro, cuánto
+ruido tiene uno pequeño, qué ocurre tras un cambio de operadora— y que un campo
+con historia corta puede beneficiarse de lo aprendido en los demás. Un ajuste por
+campo no puede transferir nada entre series.
+
+### 6.2 Rediseño del protocolo de evaluación
+
+La Fase 1 situaba los orígenes de pronóstico por **posición** dentro de la serie
+de cada campo. Ese diseño es válido para modelos ajustados campo a campo, pero
+inutilizable aquí: si cada campo tiene su propio origen, entrenar un modelo común
+significa usar el futuro de un campo para predecir el pasado de otro.
+
+**Decisión:** cortes de calendario comunes en marzo de 2023, 2024 y 2025, y
+reevaluación de **todos** los modelos bajo ese protocolo, incluidas las líneas
+base de la Fase 1. Así la comparación es directa: mismos campos, mismos orígenes,
+mismos horizontes.
+
+**Consecuencia que debe declararse:** los valores de MASE de la Fase 3 **no son
+comparables** con los de la Fase 1. Cambian los orígenes, el conjunto de campos
+evaluados y la definición del horizonte (meses de calendario en vez de pasos de
+observación). Solo son comparables entre sí.
+
+**La regla de entrenamiento.** Solo entran muestras cuyo objetivo ya había
+ocurrido en la fecha de corte: `fecha_objetivo <= corte`. Filtrar por el origen
+—`origen <= corte`— sería insuficiente y es el error más fácil de cometer: una
+muestra con origen en enero y horizonte de seis meses tiene su objetivo en julio,
+que en un corte de marzo todavía no ha ocurrido. La prueba
+`test_el_filtro_de_entrenamiento_excluye_objetivos_futuros` verifica que el caso
+peligroso existe en los datos y que el filtro correcto lo elimina.
+
+### 6.3 Objetivo adimensional
+
+La producción abarca cinco órdenes de magnitud. Un modelo entrenado sobre
+barriles dedicaría toda su capacidad a los campos grandes y trataría a los
+pequeños como ruido.
+
+**Decisión:** predecir `log(q_{t+h} / ancla_t)`, el cambio logarítmico respecto a
+un ancla reciente. Un campo que cae un 10 % aporta la misma señal produzca 50 o
+50 000 bpd. La reconstrucción a barriles es directa:
+`q̂ = ancla · exp(ŷ)`.
+
+**El ancla es la mediana de los últimos tres meses observados**, no el último
+valor: en campos ruidosos un solo mes atípico desplazaría todas las predicciones
+del campo. La prueba `test_el_ancla_es_la_mediana_reciente_y_no_el_ultimo_valor`
+fija esa decisión.
+
+**Recorte del objetivo** a `[-3, 1.5]` en escala logarítmica, es decir entre el
+5 % y 4.5 veces el ancla. Cubre cualquier transición plausible en doce meses y
+evita que un puñado de reactivaciones extremas domine la función de pérdida.
+
+### 6.4 Variables
+
+Veintiuna variables, todas calculadas con operaciones que solo miran hacia atrás
+(`shift`, `rolling`, `cummax`, `cumsum`), nunca con estadísticos de la serie
+completa:
+
+- **Escala:** `log_ancla`. Permite al modelo aprender que los campos pequeños son
+  más ruidosos sin que la escala contamine el objetivo.
+- **Historia reciente:** rezagos 0, 1, 2, 3, 6 y 12, todos relativos al ancla.
+- **Tendencia:** pendiente media de `log q` en ventanas de 3, 6 y 12 meses.
+- **Volatilidad:** desviación estándar de `Δlog q` en 6 y 12 meses.
+- **Madurez causal:** ancla contra el máximo visto **hasta ese momento**. Usar el
+  máximo de toda la serie sería mirar al futuro.
+- **Reporte:** meses observados, edad, fracción de huecos, meses sin reportar.
+- **Contexto:** operadora y departamento como categóricas nativas de LightGBM
+  (una codificación por objetivo sería otra vía de fuga), horizonte y mes.
+
+**Densificación.** Las series se reindexan a una malla mensual continua con
+huecos explícitos, para que `shift(12)` signifique «hace doce meses» y no «doce
+reportes atrás», que en un campo con huecos es otra cosa. Los huecos quedan como
+nulos, que LightGBM maneja de forma nativa: un hueco es información, no un dato
+que haya que inventar.
+
+**El rezago 0.** La primera versión empezaba los rezagos en el mes anterior, con
+el mes del propio origen entrando solo difuminado dentro del ancla. Añadirlo
+—el dato está disponible, porque solo se pronostica desde meses con reporte—
+adelantó el cruce con el pronóstico ingenuo de h = 6 a **h = 3** y bajó el MASE
+global de 1.639 a 1.595.
+
+**Verificación de causalidad.** `test_las_variables_no_miran_al_futuro` construye
+las variables dos veces —con la serie completa y truncada en el origen— y exige
+que ninguna cambie.
+
+### 6.5 Modelo
+
+LightGBM con:
+
+- **Pérdida L1.** La evaluación usa MAE y MASE, ambas de error absoluto. L2
+  optimizaría la media condicional y penalizaría en exceso los meses atípicos,
+  frecuentes en campos marginales; L1 optimiza la mediana condicional, que es lo
+  que se está midiendo.
+- **Un modelo para los doce horizontes**, con `h` como variable. Doce modelos
+  independientes multiplicarían el costo y fragmentarían los datos sin aportar:
+  la relación entre variables y objetivo cambia de forma suave con el horizonte.
+- **Parada temprana sobre partición temporal**, los últimos doce meses del tramo
+  de entrenamiento. Una partición aleatoria pondría meses futuros del mismo campo
+  en validación y daría una estimación optimista del error.
+
+Entrenamiento por corte: entre 291 000 y 376 000 muestras, 418–442 campos.
+
+### 6.6 Resultados y lectura honesta
+
+El modelo global gana en las cuatro métricas, con una mejora del **3.9 % en MASE**
+sobre el pronóstico ingenuo (1.595 frente a 1.660). Es una ganancia real pero
+modesta, y así debe presentarse.
+
+El comportamiento por horizonte es el hallazgo aprovechable: **el modelo pierde
+un 9.3 % a un mes y gana un 6.8 % a doce**, con el cruce en h = 3. A corto plazo
+la persistencia explica casi todo y no hay estructura que aprender; la ventaja
+del modelo aparece cuando el horizonte da tiempo a que la declinación y la
+madurez del campo se manifiesten.
+
+**Reservas que conviene declarar:**
+
+1. La columna de campos de más de 50 000 bpd contiene **solo dos campos**. Que
+   allí gane el Naive no soporta ninguna conclusión firme.
+2. **La operadora es la variable más importante** (15.3 % de la ganancia). Es un
+   resultado plausible —las prácticas operativas dejan huella en la trayectoria—
+   pero en operadoras con un único campo la variable funciona en parte como
+   identificador del campo, no como información transferible.
+3. Los hiperparámetros **no se optimizaron**. Se fijaron valores razonables y se
+   dejó que la parada temprana determinara el número de árboles. Una búsqueda
+   sistemática podría mejorar el resultado, y debe hacerse sobre la partición de
+   validación temporal, nunca sobre los cortes de evaluación.
+
+---
+
+## 7. Limitaciones declaradas
 
 1. **Granularidad de campo.** Las curvas agregadas mezclan pozos en distintas
    etapas de su vida. Los resultados no son extrapolables a pozo individual sin
@@ -307,20 +440,24 @@ depende solo del color. Ninguna figura usa ejes dobles.
 6. **La segmentación tiene silueta baja** (0.26). Los grupos son interpretables
    pero no netamente separados; un campo cerca de una frontera podría cambiar de
    segmento ante pequeñas variaciones de sus descriptores.
-7. **El horizonte del backtesting se cuenta en observaciones, no en meses de
-   calendario.** En un campo con huecos de reporte, doce pasos abarcan más de
-   doce meses. Los instantes `t` que reciben los modelos sí son correctos, de
-   modo que las predicciones se emiten en el momento debido, pero la etiqueta
-   «h = 12» no equivale a un año exacto en esos campos.
+7. **El horizonte del backtesting de la Fase 1 se cuenta en observaciones, no
+   en meses de calendario.** En un campo con huecos de reporte, doce pasos
+   abarcan más de doce meses. El protocolo de la Fase 3 corrige esto usando
+   meses de calendario, pero por eso mismo sus cifras no son comparables con las
+   de la Fase 1.
+8. **Los hiperparámetros del modelo global no se optimizaron.** Se fijaron
+   valores razonables y la parada temprana determinó el número de árboles.
+9. **Solo tres cortes de calendario** en la Fase 3. Con más cortes las
+   estimaciones de error serían más estables, a costa de tiempo de cómputo.
 
 ---
 
-## 7. Reproducibilidad
+## 8. Reproducibilidad
 
 ```bash
 python -m pip install -e ".[dev]"
 oilai all --force      # reconstruye todo desde el snapshot versionado
-python -m pytest       # 34 pruebas
+python -m pytest       # 100 pruebas
 ```
 
 Las semillas aleatorias están fijadas en las pruebas que las requieren. El

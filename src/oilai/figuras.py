@@ -405,3 +405,144 @@ TODAS = [
 
 def generar_todas() -> list[str]:
     return [f() for f in TODAS]
+
+
+# --- Figuras de la Fase 3 --------------------------------------------------
+
+# Par divergente azul<->rojo con gris neutro, para magnitudes con signo.
+POSITIVO = "#2a78d6"
+NEGATIVO = "#e34948"
+NEUTRO = "#f0efec"
+
+MODELOS_DESTACADOS = ["ML-global", "Naive", "Arps-24m"]
+
+
+def _mase_por_horizonte() -> "pd.DataFrame":
+    from .config import REPORTS
+
+    df = pd.read_parquet(REPORTS / "backtest_global.parquet")
+    df["mase"] = (df.y - df.yhat).abs() / df.escala
+    return df.pivot_table(index="modelo", columns="h", values="mase", aggfunc="mean")
+
+
+def fig_ml_vs_referencias() -> str:
+    """Dónde gana el modelo global y dónde no.
+
+    Dos paneles porque son dos preguntas distintas: el nivel de error por
+    horizonte, y la diferencia respecto a la referencia que hay que batir. Un
+    solo panel con dos escalas sería un eje doble, que no se usa.
+    """
+    _estilo()
+    piv = _mase_por_horizonte()
+    hs = list(piv.columns)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(8.5, 7), height_ratios=[1.35, 1], sharex=True
+    )
+
+    # Panel superior: nivel de error. Tres series, con leyenda y rótulo directo.
+    presentes = [(m, c) for m, c in zip(MODELOS_DESTACADOS, SERIE) if m in piv.index]
+
+    for modelo, color in presentes:
+        ax1.plot(hs, piv.loc[modelo], color=color, zorder=3, label=modelo,
+                 marker="o", markersize=4.5,
+                 markeredgecolor=SUPERFICIE, markeredgewidth=1.2)
+
+    # Naive y Arps terminan casi en el mismo valor: sin separación mínima los
+    # rótulos directos se superponen y dejan de identificar nada.
+    finales = sorted(
+        ((piv.loc[m].iloc[-1], m, c) for m, c in presentes), key=lambda x: x[0]
+    )
+    rango = float(np.ptp(piv.loc[[m for m, _ in presentes]].to_numpy()))
+    separacion = rango * 0.06
+
+    posiciones: list[float] = []
+    for valor, _, _ in finales:
+        y = valor if not posiciones else max(valor, posiciones[-1] + separacion)
+        posiciones.append(y)
+
+    for (valor, modelo, color), y in zip(finales, posiciones):
+        ax1.annotate(
+            f" {modelo}",
+            xy=(hs[-1], valor),
+            xytext=(hs[-1] + 0.35, y),
+            textcoords="data",
+            fontsize=8.5, color=color, fontweight="bold", va="center",
+            arrowprops=dict(arrowstyle="-", color=color, lw=0.7, alpha=0.5,
+                            shrinkA=0, shrinkB=2),
+        )
+
+    _limpiar(ax1)
+    ax1.set_ylabel("MASE (menor es mejor)")
+    ax1.set_title("El modelo global gana solo a horizontes largos")
+    ax1.set_xlim(0.5, hs[-1] + 2.6)
+    ax1.legend(frameon=False, loc="upper left", fontsize=8.5)
+    ax1.axhline(1.0, color=TINTA_3, lw=1, ls=":", zorder=1)
+    ax1.annotate(
+        "MASE = 1: igual que el pronóstico ingenuo de un paso",
+        xy=(hs[-1] + 2.4, 1.0), xytext=(0, 6), textcoords="offset points",
+        fontsize=7.5, color=TINTA_3, ha="right",
+    )
+
+    # Panel inferior: diferencia con signo -> par divergente.
+    ganancia = (piv.loc["Naive"] - piv.loc["ML-global"]) / piv.loc["Naive"] * 100
+    colores = [POSITIVO if v >= 0 else NEGATIVO for v in ganancia]
+    ax2.bar(hs, ganancia, color=colores, zorder=3, width=0.62)
+    ax2.axhline(0, color=TINTA_2, lw=1, zorder=4)
+
+    for h, v in zip(hs, ganancia):
+        ax2.annotate(
+            f"{v:+.0f}",
+            xy=(h, v),
+            xytext=(0, 4 if v >= 0 else -12),
+            textcoords="offset points",
+            ha="center", fontsize=7.5, color=TINTA_2,
+        )
+
+    _limpiar(ax2)
+    ax2.set_xlabel("horizonte de pronóstico (meses)")
+    ax2.set_ylabel("ventaja sobre Naive (%)")
+    ax2.set_xticks(hs)
+    margen = max(abs(ganancia.min()), abs(ganancia.max())) * 0.35
+    ax2.set_ylim(ganancia.min() - margen, ganancia.max() + margen)
+    ax2.text(
+        0.99, 0.06,
+        "azul: el modelo global es mejor · rojo: peor",
+        transform=ax2.transAxes, ha="right", fontsize=8, color=TINTA_3,
+    )
+
+    fig.tight_layout()
+    return _guardar(fig, "07_ml_vs_referencias.png")
+
+
+def fig_importancia_variables() -> str:
+    """Qué mira el modelo. Serie única: no hace falta codificar por color."""
+    _estilo()
+    from .config import REPORTS
+
+    imp = pd.read_csv(REPORTS / "importancia_variables.csv", index_col=0)
+    imp = imp.iloc[:, 0].head(14).sort_values()
+
+    fig, ax = plt.subplots(figsize=(7.5, 5.2))
+    ax.barh(imp.index, imp.to_numpy(), color=SERIE[0], zorder=3, height=0.68)
+
+    for nombre, valor in imp.items():
+        ax.annotate(
+            f" {valor:.1f}%",
+            xy=(valor, nombre), xytext=(4, 0), textcoords="offset points",
+            va="center", fontsize=8, color=TINTA_2,
+        )
+
+    _limpiar(ax, eje_y=False)
+    ax.set_xlim(0, imp.max() * 1.18)
+    ax.set_xlabel("ganancia aportada al modelo (%)")
+    ax.set_title("Qué variables usa el modelo global")
+    fig.tight_layout()
+    return _guardar(fig, "08_importancia_variables.png")
+
+
+TODAS_FASE3 = [fig_ml_vs_referencias, fig_importancia_variables]
+
+
+def generar_fase3() -> list[str]:
+    return [f() for f in TODAS_FASE3]

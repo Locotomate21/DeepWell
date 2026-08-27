@@ -165,6 +165,97 @@ Generadas en `reports/figures/` por `oilai eda`:
 | `05_mapa_campos.png` | Distribución geográfica, área ∝ producción |
 | `06_curvas_ejemplo.png` | Un campo representativo de cada segmento |
 
+## Resultados de la Fase 3
+
+Primer modelo propio: **un único modelo de gradient boosting entrenado sobre los
+452 campos a la vez**, en lugar de una curva ajustada campo por campo.
+
+### Cambio de protocolo
+
+La Fase 1 situaba los orígenes de pronóstico por **posición** en la serie de cada
+campo. Eso no sirve para un modelo global: entrenar con todos los campos a la vez
+exige un corte temporal único, o el modelo aprendería del futuro de un campo para
+predecir el pasado de otro.
+
+La Fase 3 introduce **cortes de calendario comunes** —marzo de 2023, 2024 y
+2025— y reevalúa bajo ellos todos los modelos, incluidas las líneas base. Regla
+de entrenamiento: solo entran muestras cuyo objetivo **ya había ocurrido** en la
+fecha de corte. Filtrar por el origen no basta; una muestra con origen anterior
+al corte pero objetivo posterior contiene justamente el dato que se quiere
+predecir.
+
+> ⚠️ Los valores de MASE de la Fase 3 **no son comparables** con los de la Fase 1:
+> cambian los orígenes, los campos evaluados y la definición del horizonte. Solo
+> son comparables entre sí, dentro de esta tabla.
+
+### El modelo global gana en las cuatro métricas
+
+61 458 predicciones sobre 336 campos, 3 cortes, horizontes de 1 a 12 meses:
+
+| Modelo | MAE (bpd) | RMSE (bpd) | sMAPE (%) | **MASE** | Sesgo (bpd) |
+|---|---|---|---|---|---|
+| **ML-global** | **262.9** | **871.4** | **20.5** | **1.595** | −45.6 |
+| Naive | 268.8 | 885.0 | 21.8 | 1.660 | +30.5 |
+| Media móvil 3m | 283.8 | 976.2 | 21.7 | 1.702 | +28.0 |
+| Drift | 296.2 | 961.9 | 31.6 | 1.864 | +8.2 |
+| Arps 24m | 328.4 | 1463.8 | 24.6 | 1.939 | −147.7 |
+| Arps 36m | 391.1 | 1764.0 | 26.1 | 2.154 | −187.1 |
+
+La mejora sobre el pronóstico ingenuo es del **3.9 % en MASE**. Es real pero
+modesta, y conviene decirlo así.
+
+### Dónde gana y dónde no
+
+| Horizonte | h=1 | h=3 | h=6 | h=9 | h=12 |
+|---|---|---|---|---|---|
+| ML-global | 0.908 | **1.261** | **1.633** | **1.936** | **2.109** |
+| Naive | **0.831** | 1.264 | 1.715 | 2.060 | 2.263 |
+| **Ventaja del ML** | −9.3 % | +0.3 % | +4.8 % | +6.0 % | **+6.8 %** |
+
+**El cruce está en h = 3.** A un mes, repetir el último valor sigue siendo mejor;
+a partir del tercer mes el modelo global domina y la ventaja crece con el
+horizonte. Es el patrón esperable: a corto plazo la persistencia lo explica casi
+todo, y solo a plazo largo hay estructura que aprender.
+
+Por tamaño de campo (todos los horizontes):
+
+| Modelo | < 500 bpd | 0.5–5k | 5–50k | > 50k |
+|---|---|---|---|---|
+| ML-global | **1.160** | 2.422 | **1.872** | 1.112 |
+| Naive | 1.274 | **2.363** | 2.049 | **0.958** |
+| Arps 24m | 1.331 | 2.975 | 2.755 | 1.003 |
+
+El modelo global gana con claridad en los campos pequeños y medianos. **En los
+campos de más de 50 000 bpd sigue ganando el Naive, con Arps muy cerca** — pero
+esa columna solo contiene 2 campos, así que no soporta una conclusión firme.
+
+### Qué mira el modelo
+
+| Variable | Ganancia |
+|---|---|
+| **operadora** | 15.3 % |
+| `rel_lag0` (mes del origen / ancla) | 9.9 % |
+| `log_ancla` (escala del campo) | 9.2 % |
+| `h` (horizonte) | 8.2 % |
+| `rel_maximo` (madurez causal) | 7.2 % |
+| `volatilidad12` | 6.8 % |
+
+Que la operadora sea la variable más importante es un resultado interesante —las
+prácticas operativas dejan huella medible en la trayectoria de producción— pero
+hay que leerlo con cautela: en operadoras con un solo campo, la variable funciona
+en parte como identificador del campo.
+
+Durante el desarrollo detecté que faltaba `rel_lag0`: los rezagos empezaban en el
+mes anterior, y el mes del propio origen solo entraba difuminado dentro del ancla.
+Añadirlo movió el cruce de h = 6 a **h = 3** y bajó el MASE de 1.639 a 1.595.
+
+### Figuras
+
+| Figura | Contenido |
+|---|---|
+| `07_ml_vs_referencias.png` | MASE por horizonte y ventaja sobre el Naive |
+| `08_importancia_variables.png` | Ganancia aportada por cada variable |
+
 ## Instalación
 
 ```bash
@@ -173,20 +264,21 @@ cd DeepWell
 python -m pip install -e ".[dev]"
 ```
 
-Para las fases de modelado y la app:
+Las fases 3 en adelante necesitan además los paquetes de modelado:
 
 ```bash
-python -m pip install -e ".[modelos,app]"
+python -m pip install -e ".[modelos]"
 ```
 
 ## Uso
 
 ```bash
-oilai all              # pipeline completo: descarga -> panel -> benchmark -> EDA
+oilai all              # pipeline completo: descarga -> panel -> benchmark -> EDA -> ML
 oilai ingest           # solo descarga el histórico de la ANH
 oilai panel            # solo reconstruye el panel limpio
 oilai benchmark        # solo corre el backtesting
 oilai eda              # caracteriza, segmenta y regenera las figuras
+oilai ml               # entrena y evalúa el modelo global
 oilai all --force      # ignora la caché y recalcula todo
 ```
 
@@ -196,7 +288,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 74 pruebas
+python -m pytest    # 100 pruebas
 ```
 
 ## Estructura
@@ -209,14 +301,17 @@ src/oilai/
 ├── evaluate.py         backtesting walk-forward y métricas
 ├── eda.py              caracterización de campos y agregados nacionales
 ├── segmentacion.py     agrupamiento de campos por comportamiento
-├── figuras.py          figuras del análisis exploratorio
+├── features.py         conjunto supervisado causal para el modelo global
+├── backtest_global.py  protocolo de evaluación con cortes de calendario
+├── figuras.py          figuras del análisis y del modelo
 ├── pipeline.py         orquestador (comando `oilai`)
 ├── run_benchmark.py    benchmark sobre todos los campos
 └── models/
     ├── arps.py         declinación exponencial, hiperbólica y armónica
-    └── baselines.py    Naive, media móvil, drift, Arps
+    ├── baselines.py    Naive, media móvil, drift, Arps
+    └── global_ml.py    modelo global de gradient boosting
 
-tests/                  74 pruebas, incluida la de ausencia de fuga temporal
+tests/                  100 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por `oilai eda`
@@ -228,7 +323,7 @@ reports/figures/        figuras generadas por `oilai eda`
 |---|---|---|
 | **1. Fundación de datos y línea base** | Ingesta, panel, Arps, baselines, backtesting, pruebas | ✅ **completa** |
 | **2. Análisis exploratorio** | Caracterización de los 608 campos, figuras, mapa, segmentación | ✅ **completa** |
-| 3. Modelo global de ML | Features + LightGBM multi-horizonte sobre todos los campos | pendiente |
+| **3. Modelo global de ML** | Features + LightGBM multi-horizonte sobre todos los campos | ✅ **completa** |
 | 4. Modelo híbrido física + ML | Arps + ML sobre residuales — aporte original | pendiente |
 | 5. Incertidumbre y anomalías | Intervalos de predicción, detección de caídas atípicas | pendiente |
 | 6. Dashboard y entregable | App Streamlit e informe metodológico | pendiente |
