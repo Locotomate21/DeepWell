@@ -352,6 +352,109 @@ método usar según el plazo que necesite.
 | `09_hibrido_vs_modelos.png` | MASE por horizonte del híbrido frente a los modelos puros |
 | `10_pesos_hibrido.png` | Los pesos aprendidos, de la persistencia al aprendizaje |
 
+## Resultados de la Fase 5
+
+Un pronóstico puntual no basta para decidir. Saber que un campo producirá 10 000
+bpd el año que viene es distinto según si el rango plausible es 9 000–11 000 o
+4 000–16 000: el punto medio es el mismo y las decisiones, opuestas.
+
+### Tres formas de construir el intervalo
+
+**Regresión cuantílica.** Modelos que estiman directamente los cuantiles del
+objetivo. Adaptan la anchura al campo, pero no garantizan nada sobre la cobertura.
+
+**Conformal por particiones.** Se mide la distribución de los errores sobre un
+conjunto de calibración que el modelo **no vio**, y su cuantil empírico es el
+margen. Es agnóstica al modelo, así que puede envolver incluso la combinación
+convexa de la Fase 4, que no tiene verosimilitud.
+
+**Conformal condicionada por clase (Mondrian).** Igual, pero calibrando por
+separado dentro de cada clase de tamaño.
+
+Las particiones son estrictamente disjuntas:
+
+```
+|........ entrenamiento ........|.. calibración ..|.... prueba ....|
+                          C-12                   C              C+12
+```
+
+Calibrar sobre datos de entrenamiento daría márgenes optimistas e intervalos
+demasiado estrechos. El coste de la separación es que el modelo de puntos se
+entrena con doce meses menos de datos que en la Fase 3.
+
+### La cobertura agregada puede mentir
+
+102 672 observaciones por método, nivel nominal del 80 %:
+
+| Método | Cobertura | Desvío | Anchura rel. | Winkler (bpd) |
+|---|---|---|---|---|
+| **Conformal** | **80.08 %** | **+0.08 pp** | **1.140** | 1816 |
+| Conformal-clase | 79.85 % | −0.15 pp | 1.227 | 1715 |
+| Cuantílica | 73.54 % | −6.46 pp | 1.236 | **1328** |
+
+La conformal calibra casi a la perfección en agregado. Pero al mirar **dentro**
+de cada clase de campo, ese 80 % resulta ser la media de dos errores de signo
+contrario:
+
+| Método | < 500 bpd | 0.5–5k | 5–50k | > 50k |
+|---|---|---|---|---|
+| Conformal | 76.1 | 83.6 | 92.8 | 99.7 |
+| **Conformal-clase** | **79.6** | **80.0** | **81.9** | 99.7 |
+| Cuantílica | 73.6 | 73.9 | 72.5 | 69.3 |
+
+**La conformal marginal sobrecubre gravemente los campos grandes** —99.7 %, con
+intervalos de 44 431 bpd de ancho— y subcubre los pequeños. Calibrar por clase lo
+corrige en tres de las cuatro: la clase 5–50k pasa de 92.8 % a 81.9 %.
+
+La clase > 50k sigue en 99.7 % por una razón concreta y declarable: **solo tiene
+2 campos**, que no reúnen los residuos necesarios para calibrarse aparte, así que
+se repliegan al margen general.
+
+### Ningún método domina
+
+- **Conformal** gana en cobertura agregada y anchura relativa.
+- **Conformal-clase** gana en cobertura condicional, que es la que importa si el
+  intervalo se va a usar campo por campo.
+- **Cuantílica** gana en Winkler porque adapta la anchura al campo, pero
+  **promete 80 % y entrega 73.5 %**, degradándose hasta 70 % a doce meses. Para
+  planeación, un intervalo que sistemáticamente se queda corto es peor que uno
+  algo ancho.
+
+Para uso operativo se recomienda **Conformal-clase**.
+
+### Detección de anomalías: alertas validadas
+
+Una anomalía es un mes en el que la producción cae **por debajo del intervalo**
+construido con la información del mes anterior. No es lo mismo que una caída
+grande: un campo en declinación acelerada cae mucho todos los meses y eso es lo
+esperado.
+
+Sobre 10 301 observaciones monitoreadas (2023–2026), **1 186 alertas de caída
+(11.5 %)**, con tasa homogénea entre tamaños gracias a la calibración por clase:
+11.4 % en campos pequeños, 11.2 % en medianos, 12.1 % en grandes.
+
+**El problema de validación.** No existe un registro público de intervenciones o
+paros con el que contrastar. En vez de declararlo y quedarse ahí, se valida de
+forma indirecta con una pregunta que los datos sí responden: *¿la producción de
+los meses siguientes a una alerta cae más que la de los meses normales?*
+
+| | Tras una alerta | Sin alerta |
+|---|---|---|
+| Producción posterior / previa (mediana) | **0.859** | 0.944 |
+| Cae más del 20 % | **40.8 %** | 14.8 % |
+| Cae más del 50 % | **12.7 %** | 1.0 % |
+
+Una alerta **triplica** la probabilidad de una caída sostenida del 20 % y
+multiplica por **12** la de un desplome del 50 %. La señal tiene valor operativo
+real: es una lista corta y priorizable de campos que merecen revisión.
+
+### Figuras
+
+| Figura | Contenido |
+|---|---|
+| `11_calibracion_intervalos.png` | Cobertura por horizonte y dentro de cada tamaño |
+| `12_validacion_alertas.png` | Qué ocurre después de una alerta |
+
 ## Instalación
 
 ```bash
@@ -376,6 +479,7 @@ oilai benchmark        # solo corre el backtesting
 oilai eda              # caracteriza, segmenta y regenera las figuras
 oilai ml               # entrena y evalúa el modelo global
 oilai hibrido          # combina física y aprendizaje, y compara las dos vías
+oilai riesgo           # intervalos de predicción y detección de anomalías
 oilai all --force      # ignora la caché y recalcula todo
 ```
 
@@ -385,7 +489,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 124 pruebas
+python -m pytest    # 156 pruebas
 ```
 
 ## Estructura
@@ -401,6 +505,9 @@ src/oilai/
 ├── features.py         conjunto supervisado causal para el modelo global
 ├── backtest_global.py  protocolo de evaluación con cortes de calendario
 ├── backtest_hibrido.py evaluación de los dos híbridos
+├── incertidumbre.py    intervalos: conformal, conformal por clase y cuantílica
+├── anomalias.py        detección de caídas y su validación
+├── backtest_incertidumbre.py  particiones disjuntas y evaluación de cobertura
 ├── figuras.py          figuras del análisis y del modelo
 ├── pipeline.py         orquestador (comando `oilai`)
 ├── run_benchmark.py    benchmark sobre todos los campos
@@ -410,7 +517,7 @@ src/oilai/
     ├── global_ml.py    modelo global de gradient boosting
     └── hibrido.py      Arps como variable y combinación por régimen
 
-tests/                  124 pruebas, incluidas las de ausencia de fuga temporal
+tests/                  156 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por `oilai eda`
@@ -424,7 +531,7 @@ reports/figures/        figuras generadas por `oilai eda`
 | **2. Análisis exploratorio** | Caracterización de los 608 campos, figuras, mapa, segmentación | ✅ **completa** |
 | **3. Modelo global de ML** | Features + LightGBM multi-horizonte sobre todos los campos | ✅ **completa** |
 | **4. Modelo híbrido física + ML** | Arps como variable y combinación por régimen — aporte original | ✅ **completa** |
-| 5. Incertidumbre y anomalías | Intervalos de predicción, detección de caídas atípicas | pendiente |
+| **5. Incertidumbre y anomalías** | Intervalos de predicción, detección de caídas atípicas | ✅ **completa** |
 | 6. Dashboard y entregable | App Streamlit e informe metodológico | pendiente |
 
 ## Fuentes

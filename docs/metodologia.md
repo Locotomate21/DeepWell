@@ -547,7 +547,174 @@ explícito sobre el implícito, y pesa tanto como los 0.04 puntos de MASE.
 
 ---
 
-## 8. Limitaciones declaradas
+## 8. Incertidumbre y anomalías (Fase 5)
+
+### 8.1 Por qué hacen falta intervalos
+
+Las fases 1 a 4 optimizaron un pronóstico puntual. Para decidir no basta: saber
+que un campo producirá 10 000 bpd es distinto según si el rango plausible es
+9 000–11 000 o 4 000–16 000. El punto medio es el mismo y las decisiones de
+inversión, opuestas.
+
+Hay además una restricción de diseño: **el híbrido de la Fase 4 es una
+combinación convexa y no tiene verosimilitud**, de modo que no puede producir
+intervalos por sí mismo. Eso descarta los métodos paramétricos y obliga a
+considerar procedimientos que envuelvan a cualquier pronosticador.
+
+### 8.2 Particiones
+
+```
+|........ entrenamiento ........|.. calibración ..|.... prueba ....|
+                          C-12                    C              C+12
+```
+
+- **Entrenamiento**: muestras cuyo objetivo ocurrió antes de `C-12`.
+- **Calibración**: orígenes en `[C-12, C)` con objetivo ya ocurrido en `C`.
+- **Prueba**: orígenes en `[C, C+12)`.
+
+Los tres conjuntos son disjuntos. La separación es obligatoria: calibrar sobre
+datos que el modelo vio en entrenamiento daría residuos artificialmente pequeños
+y, por tanto, intervalos demasiado estrechos.
+
+Se usan doce meses de orígenes de prueba en lugar de uno solo porque estimar una
+cobertura con precisión exige muchas observaciones, y porque así los tres cortes
+cubren de 2023 a 2026 de forma continua y sin solapamiento.
+
+**Coste declarado:** el modelo de puntos se entrena con doce meses menos de datos
+que el de la Fase 3, así que sus pronósticos son algo peores. Es el precio de
+unos intervalos honestos.
+
+### 8.3 Los tres métodos
+
+**Regresión cuantílica.** LightGBM sobre la pérdida pinball, un modelo por
+extremo. Adapta la anchura a las variables del campo, pero no ofrece ninguna
+garantía sobre la cobertura resultante. Los dos cuantiles se estiman de forma
+independiente y nada impide que se crucen; se ordenan, que es la corrección
+estándar y no altera la cobertura.
+
+**Conformal por particiones.** El cuantil empírico de los residuos de
+calibración es el margen. Los márgenes se estiman **por horizonte**, porque la
+incertidumbre crece con él, y son **asimétricos** —cuantiles con signo, no del
+valor absoluto— porque el error de estos modelos está sesgado hacia la
+subestimación.
+
+**Conformal condicionada por clase (Mondrian).** Igual, pero calibrando dentro de
+cada clase de tamaño, con repliegue al margen del horizonte cuando un grupo no
+reúne cien residuos.
+
+Los intervalos se construyen en escala logarítmica y se transforman después a
+barriles, lo que los vuelve **asimétricos en bpd** — correcto para una magnitud
+positiva: el margen hacia arriba es mayor que el margen hacia abajo.
+
+**Sobre la garantía conformal.** El resultado teórico supone intercambiabilidad,
+que una serie temporal no cumple. Aquí no se invoca como teorema sino que se
+mide: lo que decide es la cobertura empírica observada sobre datos posteriores al
+corte. La prueba `test_la_calibracion_conformal_alcanza_la_cobertura_nominal`
+verifica el mecanismo sobre datos sintéticos intercambiables, donde sí aplica.
+
+### 8.4 Métricas
+
+| Métrica | Qué mide |
+|---|---|
+| **Cobertura** | Fracción de valores reales dentro del intervalo. Debe acercarse al nivel nominal. |
+| **Cobertura condicional** | Lo mismo, dentro de cada subpoblación. Distingue un intervalo bien calibrado de uno que acierta el promedio compensando errores opuestos. |
+| **Anchura relativa** | Anchura como múltiplo del valor real. En barriles no sería comparable entre campos de escalas distintas. |
+| **Winkler** | Regla de puntuación propia: penaliza a la vez la anchura y los fallos de cobertura, así que no se puede mejorar haciendo trampa. |
+
+### 8.5 Resultado: la cobertura agregada puede mentir
+
+| Método | Cobertura | Desvío | Anchura rel. | Winkler |
+|---|---|---|---|---|
+| Conformal | 80.08 % | +0.08 pp | 1.140 | 1816 |
+| Conformal-clase | 79.85 % | −0.15 pp | 1.227 | 1715 |
+| Cuantílica | 73.54 % | −6.46 pp | 1.236 | 1328 |
+
+Cobertura dentro de cada clase de campo:
+
+| Método | < 500 bpd | 0.5–5k | 5–50k | > 50k |
+|---|---|---|---|---|
+| Conformal | 76.1 | 83.6 | 92.8 | 99.7 |
+| Conformal-clase | 79.6 | 80.0 | 81.9 | 99.7 |
+| Cuantílica | 73.6 | 73.9 | 72.5 | 69.3 |
+
+**El hallazgo central de la fase.** La conformal marginal calibra casi a la
+perfección en agregado (+0.08 pp) y sin embargo está mal calibrada en todas
+partes: sobrecubre los campos grandes al 99.7 %, con intervalos de 44 431 bpd de
+ancho, y subcubre los pequeños al 76.1 %. El 80 % global es la media de dos
+errores de signo contrario.
+
+Calibrar por clase lo corrige donde hay datos: la clase 5–50k pasa de 92.8 % a
+81.9 % y la 0.5–5k de 83.6 % a 80.0 %. La clase > 50k permanece en 99.7 % por una
+razón concreta: **solo contiene 2 campos**, que no reúnen los cien residuos por
+horizonte que exige el procedimiento, de modo que se repliegan al margen general.
+
+**Ningún método domina.** La cuantílica gana en Winkler porque adapta la anchura
+al campo, pero promete un 80 % y entrega un 73.5 %, degradándose hasta el 70 % a
+doce meses. Para planeación, un intervalo que se queda corto de forma sistemática
+es peor que uno algo ancho: induce confianza injustificada. Para uso operativo se
+recomienda **Conformal-clase**, que es la única a la vez calibrada en agregado y
+razonable dentro de cada clase.
+
+### 8.6 Detección de anomalías
+
+Una anomalía es un mes en el que la producción cae por debajo del intervalo
+construido con la información del mes anterior. **No es lo mismo que una caída
+grande**: un campo en declinación acelerada cae mucho todos los meses y eso es lo
+esperado. Lo que se detecta es la desviación respecto a lo que el modelo,
+conociendo el comportamiento del campo, consideraba plausible.
+
+Se usa la conformal por clase precisamente por lo anterior: con la marginal, los
+campos medianos quedaban sobrecubiertos y casi nunca disparaban alerta mientras
+los pequeños disparaban de más. Con la calibración por clase la tasa se vuelve
+homogénea —11.4 %, 11.2 % y 12.1 % en las tres clases pobladas— y la lista de
+avisos resulta utilizable.
+
+### 8.7 Validación de las alertas
+
+**El problema.** No existe un registro público de intervenciones, paros o fallos
+con el que contrastar, así que no se puede medir precisión ni exhaustividad
+contra una verdad conocida. Declararlo y detenerse ahí sería insuficiente.
+
+**La solución adoptada.** Se valida de forma indirecta, con una pregunta que los
+datos sí responden:
+
+> ¿La producción de los meses siguientes a una alerta cae más que la de los meses
+> siguientes a un mes normal?
+
+Si una alerta no anticipa nada, el detector marca ruido. Se comparan los seis
+meses posteriores contra los seis anteriores, para las observaciones en alerta y
+para el resto:
+
+| | Tras una alerta | Sin alerta |
+|---|---|---|
+| Cociente posterior/previo (mediana) | 0.859 | 0.944 |
+| Cae más del 20 % | 40.8 % | 14.8 % |
+| Cae más del 50 % | 12.7 % | 1.0 % |
+
+Una alerta triplica la probabilidad de una caída sostenida del 20 % y multiplica
+por doce la de un desplome del 50 %. La señal tiene valor operativo: produce una
+lista corta y priorizable de campos que merecen revisión.
+
+### 8.8 Reservas
+
+1. **La validación es indirecta.** Demuestra que la alerta correlaciona con
+   caídas posteriores, no que identifique correctamente sus causas.
+2. **La clase > 50k no se puede calibrar por separado** con solo dos campos. Es
+   una limitación de los datos, no del método.
+3. **El nivel se fijó en 80 %** sin explorar otros. Un 95 % daría intervalos
+   bastante más anchos y probablemente peor calibrados en las colas, donde hay
+   menos residuos de calibración.
+4. **Un solo conjunto de calibración por corte.** Métodos como la conformal
+   cruzada usarían los datos de forma más eficiente, a costa de reentrenar
+   varias veces.
+5. **Los intervalos envuelven el modelo global, no el híbrido de la Fase 4.**
+   El procedimiento es aplicable a este último sin cambios, pero exigiría
+   producir sus predicciones sobre el conjunto de calibración, lo que multiplica
+   el número de entrenamientos.
+
+---
+
+## 9. Limitaciones declaradas
 
 1. **Granularidad de campo.** Las curvas agregadas mezclan pozos en distintas
    etapas de su vida. Los resultados no son extrapolables a pozo individual sin
@@ -580,15 +747,21 @@ explícito sobre el implícito, y pesa tanto como los 0.04 puntos de MASE.
     corte, y sobre una malla gruesa de pasos de 0.1.
 11. **La combinación híbrida es lineal y convexa.** No puede expresar reglas
     condicionadas a la calidad del ajuste de Arps en cada campo.
+12. **La validación de las anomalías es indirecta.** Demuestra correlación con
+    caídas posteriores, no identificación correcta de sus causas; no existe un
+    registro público de intervenciones con el que contrastar.
+13. **Los intervalos envuelven el modelo global, no el híbrido.** El
+    procedimiento es aplicable a este último sin cambios, pero exigiría
+    multiplicar el número de entrenamientos.
 
 ---
 
-## 9. Reproducibilidad
+## 10. Reproducibilidad
 
 ```bash
 python -m pip install -e ".[dev]"
 oilai all --force      # reconstruye todo desde el snapshot versionado
-python -m pytest       # 124 pruebas
+python -m pytest       # 156 pruebas
 ```
 
 Las semillas aleatorias están fijadas en las pruebas que las requieren. El

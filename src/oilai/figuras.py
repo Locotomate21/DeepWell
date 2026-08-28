@@ -670,3 +670,155 @@ TODAS_FASE4 = [fig_hibrido_vs_todos, fig_pesos_hibrido]
 
 def generar_fase4() -> list[str]:
     return [f() for f in TODAS_FASE4]
+
+
+# --- Figuras de la Fase 5 --------------------------------------------------
+
+METODOS_INTERVALO = ["Conformal-clase", "Conformal", "Cuantílica"]
+
+
+def fig_calibracion() -> str:
+    """Si un intervalo dice 80 %, debe cubrir el 80 %.
+
+    Dos paneles porque la calibración se puede fallar de dos formas distintas:
+    empeorando con el horizonte, o compensando entre subpoblaciones un promedio
+    que parece correcto.
+    """
+    _estilo()
+    from .config import REPORTS
+    from .incertidumbre import NIVEL
+
+    iv = pd.read_parquet(REPORTS / "intervalos.parquet")
+    iv["dentro"] = (iv.y >= iv.lo) & (iv.y <= iv.hi)
+    objetivo = NIVEL * 100
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4))
+
+    # Panel A: cobertura por horizonte.
+    por_h = iv.pivot_table(index="metodo", columns="h", values="dentro",
+                           aggfunc="mean") * 100
+    hs = list(por_h.columns)
+
+    for metodo, color in zip(METODOS_INTERVALO, SERIE):
+        if metodo in por_h.index:
+            ax1.plot(hs, por_h.loc[metodo], color=color, label=metodo, zorder=3,
+                     marker="o", markersize=4.5,
+                     markeredgecolor=SUPERFICIE, markeredgewidth=1.2)
+
+    ax1.axhline(objetivo, color=TINTA_2, lw=1.2, ls="--", zorder=4)
+    ax1.annotate(f"objetivo {objetivo:.0f} %", xy=(hs[0], objetivo),
+                 xytext=(2, 6), textcoords="offset points",
+                 ha="left", fontsize=8, color=TINTA_2, fontweight="bold")
+    _limpiar(ax1)
+    ax1.set_xticks(hs)
+    ax1.set_xlabel("horizonte (meses)")
+    ax1.set_ylabel("cobertura observada (%)")
+    ax1.set_title("Calibración según el horizonte", fontsize=10.5)
+
+    # Panel B: cobertura por clase de campo.
+    orden = ["<0.5k", "0.5-5k", "5-50k", ">50k"]
+    por_clase = iv.pivot_table(index="metodo", columns="clase", values="dentro",
+                               aggfunc="mean", observed=True) * 100
+    presentes = [c for c in orden if c in por_clase.columns]
+    x = np.arange(len(presentes))
+    ancho = 0.26
+
+    for i, (metodo, color) in enumerate(zip(METODOS_INTERVALO, SERIE)):
+        if metodo not in por_clase.index:
+            continue
+        ax2.bar(x + (i - 1) * ancho, por_clase.loc[metodo, presentes],
+                width=ancho * 0.9, color=color, label=metodo, zorder=3,
+                edgecolor=SUPERFICIE, linewidth=1.2)
+
+    ax2.axhline(objetivo, color=TINTA_2, lw=1.2, ls="--", zorder=4)
+    _limpiar(ax2)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(presentes)
+    ax2.set_ylim(0, 105)
+    ax2.set_xlabel("tamaño del campo (bpd)")
+    ax2.set_ylabel("cobertura observada (%)")
+    ax2.set_title("Calibración dentro de cada tamaño", fontsize=10.5)
+
+    # Una sola leyenda para los dos paneles: los mismos métodos con los mismos
+    # colores, así la identidad no depende de recordar el panel de al lado.
+    asas, etiquetas = ax1.get_legend_handles_labels()
+    fig.legend(asas, etiquetas, frameon=False, fontsize=9, ncol=3,
+               loc="lower center", bbox_to_anchor=(0.5, -0.04))
+
+    fig.suptitle("Un intervalo del 80 % debe cubrir el 80 %, y en todas partes",
+                 fontsize=12, fontweight="bold", y=1.0)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.95))
+    return _guardar(fig, "11_calibracion_intervalos.png")
+
+
+def fig_validacion_alertas() -> str:
+    """¿Una alerta anticipa algo? Comparación contra los meses sin alerta."""
+    _estilo()
+    from .config import REPORTS
+    from .anomalias import validar
+
+    ev = pd.read_parquet(REPORTS / "evolucion_alertas.parquet")
+    tabla = validar(ev)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4))
+
+    # Panel A: distribución del cociente posterior/previo.
+    grupos = [
+        ("alerta de caída", ev[ev.anomalia_baja], SERIE[1]),
+        ("sin alerta", ev[~ev.anomalia], SERIE[0]),
+    ]
+    bins = np.linspace(0, 2, 41)
+
+    for nombre, g, color in grupos:
+        if g.empty:
+            continue
+        ax1.hist(g.cociente.clip(0, 2), bins=bins, density=True, color=color,
+                 alpha=0.55, label=f"{nombre} (n={len(g):,})", zorder=3)
+        ax1.axvline(g.cociente.median(), color=color, lw=2, ls="--", zorder=4)
+
+    ax1.axvline(1.0, color=TINTA_2, lw=1, zorder=2)
+    _limpiar(ax1)
+    ax1.set_xlabel("producción posterior / producción previa (6 meses)")
+    ax1.set_ylabel("densidad")
+    ax1.set_title("Lo que ocurre después", fontsize=10.5)
+    ax1.legend(frameon=False, fontsize=8, loc="upper left")
+    ax1.text(0.99, 0.55, "las líneas punteadas\nson las medianas",
+             transform=ax1.transAxes, ha="right", fontsize=7.5, color=TINTA_3)
+
+    # Panel B: probabilidad de caída sostenida.
+    etiquetas = ["cae más\ndel 20 %", "cae más\ndel 50 %"]
+    x = np.arange(len(etiquetas))
+    ancho = 0.34
+
+    for i, (nombre, color) in enumerate(
+        (("alerta de caída", SERIE[1]), ("sin alerta", SERIE[0]))
+    ):
+        if nombre not in tabla.index:
+            continue
+        valores = [tabla.loc[nombre, "pct_cae_mas_20"], tabla.loc[nombre, "pct_cae_mas_50"]]
+        barras = ax2.bar(x + (i - 0.5) * ancho, valores, width=ancho * 0.9,
+                         color=color, label=nombre, zorder=3,
+                         edgecolor=SUPERFICIE, linewidth=1.2)
+        for barra, v in zip(barras, valores):
+            ax2.annotate(f"{v:.0f} %", xy=(barra.get_x() + barra.get_width() / 2, v),
+                         xytext=(0, 4), textcoords="offset points",
+                         ha="center", fontsize=9, fontweight="bold", color=TINTA)
+
+    _limpiar(ax2)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(etiquetas)
+    ax2.set_ylabel("% de casos")
+    ax2.set_title("Probabilidad de caída sostenida", fontsize=10.5)
+    ax2.legend(frameon=False, fontsize=8, loc="upper right")
+
+    fig.suptitle("Una alerta anticipa una caída sostenida",
+                 fontsize=12, fontweight="bold", y=1.0)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    return _guardar(fig, "12_validacion_alertas.png")
+
+
+TODAS_FASE5 = [fig_calibracion, fig_validacion_alertas]
+
+
+def generar_fase5() -> list[str]:
+    return [f() for f in TODAS_FASE5]

@@ -6,7 +6,8 @@
     oilai eda         caracteriza los campos, los segmenta y genera las figuras
     oilai ml          entrena y evalúa el modelo global de aprendizaje
     oilai hibrido     combina física y aprendizaje, y compara las dos vías
-    oilai all         las seis, en orden
+    oilai riesgo      intervalos de predicción y detección de anomalías
+    oilai all         las siete, en orden
 
 Cada etapa cachea su salida, así que volver a correr `all` es barato: solo
 recalcula lo que falte. Con `--force` se rehace todo desde cero.
@@ -31,7 +32,7 @@ def _titulo(texto: str) -> None:
 
 
 def etapa_ingest(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 1/6 · Descarga del histórico ANH")
+    _titulo("ETAPA 1/7 · Descarga del histórico ANH")
     t0 = time.perf_counter()
     df = download(force=force)
     origen = "descargado" if force or not RAW_PARQUET.exists() else "caché"
@@ -41,7 +42,7 @@ def etapa_ingest(force: bool) -> pd.DataFrame:
 
 
 def etapa_panel(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 2/6 · Construcción del panel mensual")
+    _titulo("ETAPA 2/7 · Construcción del panel mensual")
     t0 = time.perf_counter()
     panel = build_panel(force=force)
     print(f"{len(panel):,} filas · {panel.campo.nunique()} campos · "
@@ -53,7 +54,7 @@ def etapa_panel(force: bool) -> pd.DataFrame:
 
 
 def etapa_benchmark(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 3/6 · Backtesting walk-forward de líneas base")
+    _titulo("ETAPA 3/7 · Backtesting walk-forward de líneas base")
     destino = REPORTS / "backtest_base.parquet"
 
     if destino.exists() and not force:
@@ -78,7 +79,7 @@ def etapa_benchmark(force: bool) -> pd.DataFrame:
 
 
 def etapa_eda(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 4/6 · Caracterización, segmentación y figuras")
+    _titulo("ETAPA 4/7 · Caracterización, segmentación y figuras")
 
     from .eda import caracterizar_campos, cobertura_mensual, concentracion, indice_hhi
     from .figuras import generar_todas
@@ -131,7 +132,7 @@ def etapa_eda(force: bool) -> pd.DataFrame:
 
 
 def etapa_ml(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 5/6 · Modelo global de aprendizaje automático")
+    _titulo("ETAPA 5/7 · Modelo global de aprendizaje automático")
 
     from .backtest_global import CORTES, main as correr_global
     from .evaluate import resumen
@@ -183,7 +184,7 @@ def etapa_ml(force: bool) -> pd.DataFrame:
 
 
 def etapa_hibrido(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 6/6 · Modelos híbridos: física + aprendizaje")
+    _titulo("ETAPA 6/7 · Modelos híbridos: física + aprendizaje")
 
     from .backtest_hibrido import main as correr_hibrido
     from .evaluate import resumen
@@ -240,6 +241,69 @@ def etapa_hibrido(force: bool) -> pd.DataFrame:
     return df
 
 
+def etapa_riesgo(force: bool) -> pd.DataFrame:
+    _titulo("ETAPA 7/7 · Intervalos de predicción y anomalías")
+
+    from .anomalias import validar
+    from .backtest_incertidumbre import METODO_ALERTAS, main as correr_riesgo
+    from .figuras import generar_fase5
+    from .incertidumbre import NIVEL, cobertura_condicional, resumen_intervalos
+
+    destino = REPORTS / "intervalos.parquet"
+    t0 = time.perf_counter()
+
+    if destino.exists() and not force:
+        intervalos = pd.read_parquet(destino)
+        alertas = pd.read_parquet(REPORTS / "alertas.parquet")
+        evolucion = pd.read_parquet(REPORTS / "evolucion_alertas.parquet")
+        print(f"{len(intervalos):,} intervalos (caché)")
+    else:
+        intervalos, alertas, evolucion = correr_riesgo(verbose=True)
+        print(f"completado en {(time.perf_counter() - t0) / 60:.1f} min")
+
+    print(f"{len(intervalos):,} intervalos · nivel nominal {NIVEL * 100:.0f}%")
+    print()
+
+    tabla = resumen_intervalos(intervalos)
+    print("Calidad de los intervalos:")
+    print(tabla.round(3).to_string())
+
+    print()
+    print("Cobertura dentro de cada clase de campo (%):")
+    print(cobertura_condicional(intervalos, "clase").round(1).to_string())
+
+    mejor = tabla.desvio_pp.abs().idxmin()
+    print()
+    print(f"Mejor calibrado: {mejor} "
+          f"({tabla.loc[mejor, 'cobertura_%']:.1f}% frente a {NIVEL * 100:.0f}% nominal).")
+
+    print()
+    caidas = int(alertas.anomalia_baja.sum())
+    print(f"Anomalías ({METODO_ALERTAS}, horizonte 1 mes):")
+    print(f"  {len(alertas):,} observaciones monitoreadas · {caidas} alertas de caída "
+          f"({caidas / len(alertas) * 100:.1f}%)")
+
+    val = validar(evolucion)
+    print()
+    print("¿Anticipa algo la alerta? Evolución en los 6 meses siguientes:")
+    print(val.round(3).to_string())
+
+    if {"alerta de caída", "sin alerta"}.issubset(val.index):
+        razon = (val.loc["alerta de caída", "pct_cae_mas_50"]
+                 / max(val.loc["sin alerta", "pct_cae_mas_50"], 1e-9))
+        print()
+        print(f"Tras una alerta, el riesgo de que la producción caiga más del 50 % "
+              f"es {razon:.0f} veces mayor.")
+
+    tabla.to_csv(REPORTS / "calidad_intervalos.csv")
+    val.to_csv(REPORTS / "validacion_alertas.csv")
+
+    rutas = generar_fase5()
+    print(f"{len(rutas)} figuras generadas en {FIGURES}")
+    print(f"-> {REPORTS / 'calidad_intervalos.csv'}")
+    return intervalos
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="oilai",
@@ -247,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "etapa",
-        choices=["ingest", "panel", "benchmark", "eda", "ml", "hibrido", "all"],
+        choices=["ingest", "panel", "benchmark", "eda", "ml", "hibrido",
+                 "riesgo", "all"],
         help="etapa a ejecutar",
     )
     parser.add_argument(
@@ -269,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
         etapa_ml(args.force)
     if args.etapa in ("hibrido", "all"):
         etapa_hibrido(args.force)
+    if args.etapa in ("riesgo", "all"):
+        etapa_riesgo(args.force)
 
     print("\nListo.")
     return 0
