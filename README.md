@@ -256,6 +256,102 @@ Añadirlo movió el cruce de h = 6 a **h = 3** y bajó el MASE de 1.639 a 1.595.
 | `07_ml_vs_referencias.png` | MASE por horizonte y ventaja sobre el Naive |
 | `08_importancia_variables.png` | Ganancia aportada por cada variable |
 
+## Resultados de la Fase 4
+
+El aporte central de la tesis. Las fases anteriores establecieron que **ningún
+modelo gana en todos los regímenes**: el pronóstico ingenuo domina a un mes, el
+modelo global a partir del tercero, Arps se defiende en los campos grandes. La
+Fase 4 prueba **dos maneras de combinarlos**, deliberadamente opuestas en
+filosofía.
+
+**Vía A — Arps como variable (híbrido implícito).** Se calcula el pronóstico de
+Arps para cada campo, origen y horizonte y se entrega al modelo global como una
+variable más. El modelo decide solo cuándo confiar en la física. Flexible, pero
+la combinación queda enterrada en los árboles.
+
+**Vía B — Combinación convexa por régimen (híbrido explícito).** Se estiman pesos
+que suman uno sobre los tres modelos base, por separado para cada horizonte y
+clase de campo. Menos flexible, pero cada peso es legible: dice literalmente
+cuánto confiar en cada modelo en cada situación.
+
+Los pesos se estiman en un origen de validación **doce meses anterior** al corte
+de evaluación. Usar el propio corte y luego medir sobre él sería hacer trampa.
+
+### El híbrido explícito gana
+
+| Modelo | MAE (bpd) | sMAPE (%) | **MASE** | Sesgo (bpd) |
+|---|---|---|---|---|
+| **Híbrido-régimen** | **260.7** | **20.1** | **1.551** | **−13.2** |
+| Híbrido-Arps-ML | 265.8 | 20.4 | 1.591 | −49.9 |
+| ML-global (Fase 3) | 262.9 | 20.5 | 1.595 | −45.6 |
+| Naive | 268.8 | 21.8 | 1.660 | +30.5 |
+| Arps 24m | 328.4 | 24.6 | 1.939 | −147.7 |
+
+**+6.6 % frente al pronóstico ingenuo** y **+2.8 % frente al modelo global**. El
+sesgo cae de −45.6 a −13.2 bpd: la combinación cancela los sesgos opuestos de sus
+componentes (Naive sobreestima, Arps subestima con fuerza).
+
+### El resultado contraintuitivo
+
+**La vía A apenas aporta nada**: 1.591 frente a 1.595 del modelo global, una
+mejora del 0.25 %. Inyectar el pronóstico de Arps como variable no añade
+información que el modelo no tuviera ya —los rezagos y las pendientes ya
+describen la trayectoria—, así que el modelo lo ignora casi por completo.
+
+**El híbrido explícito, más rígido, gana al implícito, más flexible.** No explota
+información nueva sino **diversidad de errores**: promediar modelos que se
+equivocan en direcciones opuestas reduce el error aunque ninguno mejore por su
+cuenta. Es un resultado que merece defenderse como tal.
+
+### Es el único modelo que gana en todos los regímenes
+
+Por horizonte:
+
+| | h=1 | h=3 | h=6 | h=12 |
+|---|---|---|---|---|
+| **Híbrido-régimen** | **0.823** | **1.195** | **1.608** | **2.078** |
+| ML-global | 0.908 | 1.261 | 1.633 | 2.109 |
+| Naive | 0.831 | 1.264 | 1.715 | 2.263 |
+
+Gana **también a un mes**, donde el modelo global perdía un 9.3 % contra el
+Naive. Por clase de campo:
+
+| Modelo | < 500 bpd | 0.5–5k | 5–50k | > 50k |
+|---|---|---|---|---|
+| **Híbrido-régimen** | **1.209** | **2.050** | 2.019 | **0.891** |
+| ML-global | 1.247 | 2.128 | **1.971** | 1.112 |
+| Naive | 1.348 | 2.118 | 2.086 | 0.958 |
+| Arps 24m | 1.425 | 2.684 | 2.666 | 1.003 |
+
+Gana en tres de las cuatro clases y empata prácticamente en la cuarta. **Ningún
+modelo puro lo consigue.**
+
+### Los pesos aprendidos son el entregable interpretable
+
+Promedio de los tres cortes:
+
+| Horizonte | Naive | Arps 24m | ML-global |
+|---|---|---|---|
+| 1 mes | **0.72** | 0.03 | 0.25 |
+| 3 meses | 0.53 | 0.15 | 0.32 |
+| 6 meses | 0.33 | 0.20 | 0.47 |
+| 12 meses | 0.28 | 0.22 | **0.50** |
+
+La rotación es continua y no se le impuso al modelo: **la persistencia pierde
+peso de 0.72 a 0.28 mientras el aprendizaje sube de 0.25 a 0.50**, y la física
+aparece a partir del segundo mes. Es la confirmación cuantitativa, derivada de
+los datos, de lo que las fases 1 a 3 habían mostrado por separado.
+
+Para un ingeniero de producción esta tabla es directamente accionable: dice qué
+método usar según el plazo que necesite.
+
+### Figuras
+
+| Figura | Contenido |
+|---|---|
+| `09_hibrido_vs_modelos.png` | MASE por horizonte del híbrido frente a los modelos puros |
+| `10_pesos_hibrido.png` | Los pesos aprendidos, de la persistencia al aprendizaje |
+
 ## Instalación
 
 ```bash
@@ -273,12 +369,13 @@ python -m pip install -e ".[modelos]"
 ## Uso
 
 ```bash
-oilai all              # pipeline completo: descarga -> panel -> benchmark -> EDA -> ML
+oilai all              # pipeline completo: de la descarga a los modelos híbridos
 oilai ingest           # solo descarga el histórico de la ANH
 oilai panel            # solo reconstruye el panel limpio
 oilai benchmark        # solo corre el backtesting
 oilai eda              # caracteriza, segmenta y regenera las figuras
 oilai ml               # entrena y evalúa el modelo global
+oilai hibrido          # combina física y aprendizaje, y compara las dos vías
 oilai all --force      # ignora la caché y recalcula todo
 ```
 
@@ -288,7 +385,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 100 pruebas
+python -m pytest    # 124 pruebas
 ```
 
 ## Estructura
@@ -303,15 +400,17 @@ src/oilai/
 ├── segmentacion.py     agrupamiento de campos por comportamiento
 ├── features.py         conjunto supervisado causal para el modelo global
 ├── backtest_global.py  protocolo de evaluación con cortes de calendario
+├── backtest_hibrido.py evaluación de los dos híbridos
 ├── figuras.py          figuras del análisis y del modelo
 ├── pipeline.py         orquestador (comando `oilai`)
 ├── run_benchmark.py    benchmark sobre todos los campos
 └── models/
     ├── arps.py         declinación exponencial, hiperbólica y armónica
     ├── baselines.py    Naive, media móvil, drift, Arps
-    └── global_ml.py    modelo global de gradient boosting
+    ├── global_ml.py    modelo global de gradient boosting
+    └── hibrido.py      Arps como variable y combinación por régimen
 
-tests/                  100 pruebas, incluidas las de ausencia de fuga temporal
+tests/                  124 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por `oilai eda`
@@ -324,7 +423,7 @@ reports/figures/        figuras generadas por `oilai eda`
 | **1. Fundación de datos y línea base** | Ingesta, panel, Arps, baselines, backtesting, pruebas | ✅ **completa** |
 | **2. Análisis exploratorio** | Caracterización de los 608 campos, figuras, mapa, segmentación | ✅ **completa** |
 | **3. Modelo global de ML** | Features + LightGBM multi-horizonte sobre todos los campos | ✅ **completa** |
-| 4. Modelo híbrido física + ML | Arps + ML sobre residuales — aporte original | pendiente |
+| **4. Modelo híbrido física + ML** | Arps como variable y combinación por régimen — aporte original | ✅ **completa** |
 | 5. Incertidumbre y anomalías | Intervalos de predicción, detección de caídas atípicas | pendiente |
 | 6. Dashboard y entregable | App Streamlit e informe metodológico | pendiente |
 

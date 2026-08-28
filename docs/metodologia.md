@@ -420,7 +420,134 @@ madurez del campo se manifiesten.
 
 ---
 
-## 7. Limitaciones declaradas
+## 7. Modelos híbridos (Fase 4)
+
+### 7.1 Planteamiento
+
+Las fases 1 a 3 dejaron establecido que ningún modelo domina en todos los
+regímenes: la persistencia gana a un mes, el modelo global a partir del tercero,
+y Arps se defiende en los campos grandes. Eso plantea una pregunta que no es de
+implementación sino de diseño: **¿cómo se combinan?**
+
+Se contrastan dos respuestas deliberadamente opuestas, porque la comparación
+entre ellas es en sí misma un resultado.
+
+### 7.2 Vía A — Arps como variable (híbrido implícito)
+
+Se ajusta Arps en cada par (campo, origen) con ventana de 24 meses, se proyecta
+al horizonte correspondiente, y el pronóstico se entrega al modelo global como
+una variable más, en la misma escala del objetivo: `log(q_arps / ancla)`. Se
+acompaña de `Di` y `b`, que describen el régimen de declinación estimado.
+
+El modelo decide por sí solo cuánto peso dar a la física. Es la opción flexible.
+
+**Eficiencia y corrección.** Los 38 257 ajustes de Arps se calculan **una sola
+vez** y se cachean: el ajuste en el origen `t` depende únicamente de datos
+anteriores o iguales a `t`, así que el mismo resultado sirve para los tres cortes
+sin riesgo de fuga. El eje temporal del ajuste es de meses de calendario, no de
+posiciones: en un campo con huecos, doce reportes atrás no son doce meses atrás y
+la declinación saldría sesgada.
+
+`arps_multiple` es una reescritura vectorizada de la curva, necesaria porque la
+versión original recibe `b` como escalar —lo que exige `curve_fit`— y su rama
+`if b < 1e-6` no admite vectores. Una prueba comprueba que ambas coinciden en
+todo el rango de `b`, incluidos los extremos.
+
+### 7.3 Vía B — Combinación convexa por régimen (híbrido explícito)
+
+Se estiman pesos no negativos que suman uno sobre los pronósticos de Naive,
+Arps-24m y el modelo global, por separado para cada **horizonte** y **clase de
+tamaño de campo**.
+
+**Estimación de los pesos.** Búsqueda exhaustiva sobre una malla del símplex en
+pasos de 0.1: con tres modelos son 66 combinaciones, barato y suficiente. Se
+prefiere a una optimización continua porque esta última daría pesos con una
+precisión que los datos no respaldan. El criterio es el error absoluto medio, el
+mismo que se usa para evaluar.
+
+**Dónde se estiman.** En un origen de validación **doce meses anterior** al corte
+de evaluación. En ese origen los valores reales ya se conocen en la fecha de
+corte, así que no hay fuga; estimar los pesos sobre el propio corte y luego medir
+sobre él sería circular. Esto obliga a entrenar el modelo global dos veces por
+corte, una para la validación y otra para la evaluación.
+
+**Repliegue.** Un bucket con menos de 60 observaciones no da para estimar tres
+pesos, así que se usan los del horizonte completo, y si tampoco alcanzan, los
+globales. La clase de tamaño se calcula con los doce meses **previos** al origen:
+usar la media de toda la serie metería información posterior en una variable de
+estratificación.
+
+### 7.4 Resultados
+
+| Modelo | MAE | sMAPE | MASE | Sesgo |
+|---|---|---|---|---|
+| Híbrido-régimen | 260.7 | 20.1 % | **1.551** | −13.2 |
+| Híbrido-Arps-ML | 265.8 | 20.4 % | 1.591 | −49.9 |
+| ML-global | 262.9 | 20.5 % | 1.595 | −45.6 |
+| Naive | 268.8 | 21.8 % | 1.660 | +30.5 |
+| Arps-24m | 328.4 | 24.6 % | 1.939 | −147.7 |
+
+**La vía B gana; la vía A apenas aporta.** El híbrido explícito mejora un 6.6 %
+sobre el pronóstico ingenuo y un 2.8 % sobre el modelo global. El implícito mejora
+un 0.25 % sobre el modelo global, es decir, prácticamente nada.
+
+### 7.5 Interpretación del resultado contraintuitivo
+
+Cabía esperar lo opuesto: la vía A es estrictamente más flexible —puede
+representar cualquier combinación que la vía B exprese, y muchas más— y dispone
+de la misma información. Que pierda tiene dos explicaciones que conviene separar:
+
+1. **Arps no aporta información nueva.** Los rezagos, las pendientes y la
+   volatilidad ya describen la trayectoria reciente del campo, que es exactamente
+   lo que Arps resume en tres parámetros. El modelo global no gana nada al
+   recibirlo y lo ignora casi por completo.
+
+2. **La vía B no explota información, sino diversidad de errores.** Sus
+   componentes se equivocan en direcciones opuestas —Naive sobreestima en +30 bpd,
+   Arps subestima en −148— y promediarlos cancela el sesgo: el del híbrido cae a
+   −13 bpd. Ese mecanismo es inaccesible para un modelo único por flexible que
+   sea, porque no consiste en aprender mejor sino en **combinar estimadores
+   sesgados de forma complementaria**.
+
+La conclusión metodológica es que, en este problema, la ganancia no está en darle
+más información al modelo sino en **cómo se agregan modelos que ya existen**.
+
+### 7.6 Los pesos como entregable
+
+Promedio de los tres cortes:
+
+| Horizonte | Naive | Arps-24m | ML-global |
+|---|---|---|---|
+| 1 mes | 0.72 | 0.03 | 0.25 |
+| 3 meses | 0.53 | 0.15 | 0.32 |
+| 6 meses | 0.33 | 0.20 | 0.47 |
+| 12 meses | 0.28 | 0.22 | 0.50 |
+
+La rotación es continua y **no se le impuso al procedimiento**: emerge de
+minimizar el error en el periodo de validación. Que reproduzca lo que las fases 1
+a 3 habían encontrado por separado —persistencia a corto plazo, aprendizaje y
+física a largo— es una validación cruzada de todo el trabajo anterior.
+
+Para una operadora la tabla es directamente accionable: indica qué método usar
+según el plazo de planeación. Esa legibilidad es la ventaja práctica del híbrido
+explícito sobre el implícito, y pesa tanto como los 0.04 puntos de MASE.
+
+### 7.7 Reservas
+
+1. **La mejora es modesta en términos absolutos.** Un MASE de 1.551 sigue estando
+   por encima de 1: el pronóstico ingenuo de un paso continúa siendo un rival
+   duro, y una parte grande del error es irreducible (Fase 2, §5).
+2. **Los pesos se estiman sobre un solo origen de validación** por corte. Usar
+   varios daría estimaciones más estables, a costa de más entrenamientos.
+3. **La malla de pesos es gruesa** (pasos de 0.1). Es una decisión consciente
+   frente al sobreajuste, pero impide distinguir diferencias finas.
+4. **La combinación es lineal y convexa.** No puede representar reglas del tipo
+   «usar Arps solo si el ajuste fue bueno»; una combinación con pesos dependientes
+   de la calidad del ajuste queda como extensión natural.
+
+---
+
+## 8. Limitaciones declaradas
 
 1. **Granularidad de campo.** Las curvas agregadas mezclan pozos en distintas
    etapas de su vida. Los resultados no son extrapolables a pozo individual sin
@@ -447,17 +574,21 @@ madurez del campo se manifiesten.
    de la Fase 1.
 8. **Los hiperparámetros del modelo global no se optimizaron.** Se fijaron
    valores razonables y la parada temprana determinó el número de árboles.
-9. **Solo tres cortes de calendario** en la Fase 3. Con más cortes las
+9. **Solo tres cortes de calendario** en las fases 3 y 4. Con más cortes las
    estimaciones de error serían más estables, a costa de tiempo de cómputo.
+10. **Los pesos del híbrido se estiman sobre un único origen de validación** por
+    corte, y sobre una malla gruesa de pasos de 0.1.
+11. **La combinación híbrida es lineal y convexa.** No puede expresar reglas
+    condicionadas a la calidad del ajuste de Arps en cada campo.
 
 ---
 
-## 8. Reproducibilidad
+## 9. Reproducibilidad
 
 ```bash
 python -m pip install -e ".[dev]"
 oilai all --force      # reconstruye todo desde el snapshot versionado
-python -m pytest       # 100 pruebas
+python -m pytest       # 124 pruebas
 ```
 
 Las semillas aleatorias están fijadas en las pruebas que las requieren. El

@@ -5,7 +5,8 @@
     oilai benchmark   corre el backtesting walk-forward de las líneas base
     oilai eda         caracteriza los campos, los segmenta y genera las figuras
     oilai ml          entrena y evalúa el modelo global de aprendizaje
-    oilai all         las cinco, en orden
+    oilai hibrido     combina física y aprendizaje, y compara las dos vías
+    oilai all         las seis, en orden
 
 Cada etapa cachea su salida, así que volver a correr `all` es barato: solo
 recalcula lo que falte. Con `--force` se rehace todo desde cero.
@@ -30,7 +31,7 @@ def _titulo(texto: str) -> None:
 
 
 def etapa_ingest(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 1/5 · Descarga del histórico ANH")
+    _titulo("ETAPA 1/6 · Descarga del histórico ANH")
     t0 = time.perf_counter()
     df = download(force=force)
     origen = "descargado" if force or not RAW_PARQUET.exists() else "caché"
@@ -40,7 +41,7 @@ def etapa_ingest(force: bool) -> pd.DataFrame:
 
 
 def etapa_panel(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 2/5 · Construcción del panel mensual")
+    _titulo("ETAPA 2/6 · Construcción del panel mensual")
     t0 = time.perf_counter()
     panel = build_panel(force=force)
     print(f"{len(panel):,} filas · {panel.campo.nunique()} campos · "
@@ -52,7 +53,7 @@ def etapa_panel(force: bool) -> pd.DataFrame:
 
 
 def etapa_benchmark(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 3/5 · Backtesting walk-forward de líneas base")
+    _titulo("ETAPA 3/6 · Backtesting walk-forward de líneas base")
     destino = REPORTS / "backtest_base.parquet"
 
     if destino.exists() and not force:
@@ -77,7 +78,7 @@ def etapa_benchmark(force: bool) -> pd.DataFrame:
 
 
 def etapa_eda(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 4/5 · Caracterización, segmentación y figuras")
+    _titulo("ETAPA 4/6 · Caracterización, segmentación y figuras")
 
     from .eda import caracterizar_campos, cobertura_mensual, concentracion, indice_hhi
     from .figuras import generar_todas
@@ -130,7 +131,7 @@ def etapa_eda(force: bool) -> pd.DataFrame:
 
 
 def etapa_ml(force: bool) -> pd.DataFrame:
-    _titulo("ETAPA 5/5 · Modelo global de aprendizaje automático")
+    _titulo("ETAPA 5/6 · Modelo global de aprendizaje automático")
 
     from .backtest_global import CORTES, main as correr_global
     from .evaluate import resumen
@@ -181,6 +182,64 @@ def etapa_ml(force: bool) -> pd.DataFrame:
     return df
 
 
+def etapa_hibrido(force: bool) -> pd.DataFrame:
+    _titulo("ETAPA 6/6 · Modelos híbridos: física + aprendizaje")
+
+    from .backtest_hibrido import main as correr_hibrido
+    from .evaluate import resumen
+    from .figuras import generar_fase4
+
+    destino = REPORTS / "backtest_hibrido.parquet"
+    t0 = time.perf_counter()
+
+    if destino.exists() and not force:
+        df = pd.read_parquet(destino)
+        pesos = pd.read_csv(REPORTS / "pesos_hibrido.csv")
+        print(f"{len(df):,} predicciones (caché)")
+    else:
+        print("Nota: el ajuste de Arps en cada origen tarda ~13 min la primera vez.")
+        df, pesos = correr_hibrido()
+        print(f"completado en {(time.perf_counter() - t0) / 60:.1f} min")
+
+    print(f"{len(df):,} predicciones · {df.campo.nunique()} campos · "
+          f"{df.modelo.nunique()} modelos")
+    print()
+
+    tabla = resumen(df).round(3)
+    print("Ranking de la Fase 4 (menor MASE es mejor):")
+    print(tabla.to_string())
+
+    df = df.copy()
+    df["mase"] = (df.y - df.yhat).abs() / df.escala
+    piv = df.pivot_table(index="modelo", columns="h", values="mase", aggfunc="mean")
+    print()
+    print("MASE por horizonte:")
+    print(piv[[1, 3, 6, 9, 12]].round(3).sort_values(12).to_string())
+
+    print()
+    print("MASE por clase de campo:")
+    print(df.pivot_table(index="modelo", columns="clase", values="mase",
+                         aggfunc="mean", observed=True).round(3).to_string())
+
+    print()
+    print("Pesos medios que aprende el híbrido, por horizonte:")
+    bases = [c for c in ("Naive", "Arps-24m", "ML-global") if c in pesos.columns]
+    print(pesos.groupby("h")[bases].mean().round(2).to_string())
+
+    mejor = tabla.index[0]
+    ventaja_naive = (1 - tabla.loc[mejor, "MASE"] / tabla.loc["Naive", "MASE"]) * 100
+    print()
+    print(f"Mejor modelo: {mejor} (MASE {tabla.loc[mejor, 'MASE']:.3f}, "
+          f"{ventaja_naive:+.1f}% frente al pronóstico ingenuo).")
+
+    tabla.to_csv(REPORTS / "ranking_hibrido.csv")
+
+    rutas = generar_fase4()
+    print(f"{len(rutas)} figuras generadas en {FIGURES}")
+    print(f"-> {REPORTS / 'ranking_hibrido.csv'}")
+    return df
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="oilai",
@@ -188,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "etapa",
-        choices=["ingest", "panel", "benchmark", "eda", "ml", "all"],
+        choices=["ingest", "panel", "benchmark", "eda", "ml", "hibrido", "all"],
         help="etapa a ejecutar",
     )
     parser.add_argument(
@@ -208,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         etapa_eda(args.force)
     if args.etapa in ("ml", "all"):
         etapa_ml(args.force)
+    if args.etapa in ("hibrido", "all"):
+        etapa_hibrido(args.force)
 
     print("\nListo.")
     return 0

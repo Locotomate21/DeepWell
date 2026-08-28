@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from oilai.models.arps import arps, fit, fit_mejor
+from oilai.models.arps import arps, arps_multiple, fit, fit_mejor
 
 
 def test_exponencial_es_el_limite_continuo_de_b_cero():
@@ -81,3 +81,28 @@ def test_la_etiqueta_de_tipo_corresponde_al_valor_de_b():
     t = np.arange(40.0)
     assert fit(t, arps(t, 900, 0.03, 0.0), b_fijo=0.0).tipo == "exponencial"
     assert fit(t, arps(t, 900, 0.03, 1.0), b_fijo=1.0).tipo == "armónica"
+
+
+@pytest.mark.parametrize("b", [0.0, 1e-9, 0.25, 0.6, 1.0])
+def test_la_version_vectorizada_coincide_con_la_escalar(b):
+    """`arps_multiple` evalua miles de ajustes; debe dar exactamente lo mismo."""
+    t = np.arange(0.0, 48.0)
+    n = len(t)
+
+    escalar = arps(t, 1000.0, 0.03, b)
+    vectorial = arps_multiple(t, np.full(n, 1000.0), np.full(n, 0.03), np.full(n, b))
+
+    assert np.allclose(escalar, vectorial)
+
+
+def test_la_version_vectorizada_mezcla_distintos_regimenes():
+    """Cada fila puede tener su propio b, que es el caso real de uso."""
+    t = np.array([12.0, 12.0, 12.0])
+    qi = np.array([1000.0, 1000.0, 1000.0])
+    di = np.array([0.03, 0.03, 0.03])
+    b = np.array([0.0, 0.5, 1.0])
+
+    salida = arps_multiple(t, qi, di, b)
+
+    for j, b_j in enumerate(b):
+        assert salida[j] == pytest.approx(arps(12.0, 1000.0, 0.03, b_j))

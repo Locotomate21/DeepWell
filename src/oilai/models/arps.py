@@ -129,3 +129,32 @@ def fit_mejor(t: np.ndarray, q: np.ndarray) -> ArpsFit:
     if not validos:
         return candidatos[-1]
     return min(validos, key=lambda c: c.rmse_ajuste)
+
+
+def arps_multiple(
+    t: np.ndarray, qi: np.ndarray, di: np.ndarray, b: np.ndarray
+) -> np.ndarray:
+    """Arps evaluado sobre muchos ajustes a la vez.
+
+    `arps` recibe `b` como escalar porque es lo que necesita `curve_fit`, y su
+    rama `if b < 1e-6` no funciona con vectores. Esta versión acepta arrays en
+    los cuatro argumentos, que es lo que hace falta para evaluar decenas de miles
+    de ajustes de golpe.
+
+    El caso b→0 se resuelve calculando ambas ramas y seleccionando con
+    `np.where`; el `b` del denominador se sustituye por 1 donde no se usa, para
+    no generar divisiones por cero que ensucien la salida con avisos.
+    """
+    t = np.asarray(t, dtype=float)
+    qi = np.asarray(qi, dtype=float)
+    di = np.asarray(di, dtype=float)
+    b = np.asarray(b, dtype=float)
+
+    exponencial = b < 1e-6
+    b_seguro = np.where(exponencial, 1.0, b)
+
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        hiperbolica = qi / np.power(
+            np.clip(1.0 + b_seguro * di * t, 1e-12, None), 1.0 / b_seguro
+        )
+        return np.where(exponencial, qi * np.exp(-di * t), hiperbolica)

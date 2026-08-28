@@ -546,3 +546,127 @@ TODAS_FASE3 = [fig_ml_vs_referencias, fig_importancia_variables]
 
 def generar_fase3() -> list[str]:
     return [f() for f in TODAS_FASE3]
+
+
+# --- Figuras de la Fase 4 --------------------------------------------------
+
+MODELOS_FASE4 = ["Híbrido-regimen", "ML-global", "Naive"]
+BASES_PESOS = ["Naive", "Arps-24m", "ML-global"]
+
+
+def _mase_hibrido() -> "pd.DataFrame":
+    from .config import REPORTS
+
+    df = pd.read_parquet(REPORTS / "backtest_hibrido.parquet")
+    df["mase"] = (df.y - df.yhat).abs() / df.escala
+    return df
+
+
+def fig_hibrido_vs_todos() -> str:
+    """El híbrido frente al mejor modelo puro y a la referencia."""
+    _estilo()
+    df = _mase_hibrido()
+    piv = df.pivot_table(index="modelo", columns="h", values="mase", aggfunc="mean")
+    hs = list(piv.columns)
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+
+    for modelo, color in zip(MODELOS_FASE4, SERIE):
+        if modelo not in piv.index:
+            continue
+        ancho = 2.6 if modelo == "Híbrido-regimen" else 1.8
+        ax.plot(hs, piv.loc[modelo], color=color, zorder=3, label=modelo,
+                linewidth=ancho, marker="o", markersize=4.5,
+                markeredgecolor=SUPERFICIE, markeredgewidth=1.2)
+
+    # Separación mínima entre rótulos: Naive y ML terminan muy cerca.
+    finales = sorted(
+        ((piv.loc[m].iloc[-1], m, c) for m, c in zip(MODELOS_FASE4, SERIE)
+         if m in piv.index),
+        key=lambda x: x[0],
+    )
+    rango = float(np.ptp(piv.loc[[m for m in MODELOS_FASE4 if m in piv.index]].to_numpy()))
+    posiciones: list[float] = []
+    for valor, _, _ in finales:
+        posiciones.append(valor if not posiciones else max(valor, posiciones[-1] + rango * 0.07))
+
+    for (valor, modelo, color), y in zip(finales, posiciones):
+        ax.annotate(
+            f" {modelo}", xy=(hs[-1], valor), xytext=(hs[-1] + 0.35, y),
+            textcoords="data", fontsize=8.5, color=color, fontweight="bold",
+            va="center",
+            arrowprops=dict(arrowstyle="-", color=color, lw=0.7, alpha=0.5,
+                            shrinkA=0, shrinkB=2),
+        )
+
+    _limpiar(ax)
+    ax.set_xlim(0.5, hs[-1] + 2.8)
+    ax.set_xticks(hs)
+    ax.set_xlabel("horizonte de pronóstico (meses)")
+    ax.set_ylabel("MASE (menor es mejor)")
+    ax.set_title("El híbrido gana en todos los horizontes, incluido el primero")
+    ax.legend(frameon=False, loc="upper left", fontsize=8.5)
+    fig.tight_layout()
+    return _guardar(fig, "09_hibrido_vs_modelos.png")
+
+
+def fig_pesos_hibrido() -> str:
+    """Los pesos aprendidos: cuánto confiar en cada modelo según el horizonte.
+
+    Es el entregable interpretable de la fase. Barras apiladas porque los pesos
+    suman uno por construcción, con separación entre segmentos para que el
+    apilado se lea como partes de un todo y no como un bloque continuo.
+    """
+    _estilo()
+    from .config import REPORTS
+
+    pesos = pd.read_csv(REPORTS / "pesos_hibrido.csv")
+    medios = pesos.groupby("h")[BASES_PESOS].mean()
+    hs = medios.index.to_numpy()
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+
+    base = np.zeros(len(hs))
+    for modelo, color in zip(BASES_PESOS, SERIE):
+        valores = medios[modelo].to_numpy()
+        ax.bar(hs, valores, bottom=base, color=color, label=modelo,
+               width=0.68, zorder=3,
+               edgecolor=SUPERFICIE, linewidth=1.4)
+        base += valores
+
+    _limpiar(ax)
+    ax.set_ylim(0, 1)
+    ax.set_xticks(hs)
+    ax.set_xlabel("horizonte de pronóstico (meses)")
+    ax.set_ylabel("peso asignado")
+    ax.set_title("De la persistencia al aprendizaje: los pesos que el híbrido aprende")
+    ax.legend(frameon=False, loc="upper center", ncol=3, fontsize=8.5,
+              bbox_to_anchor=(0.5, -0.16))
+
+    # Se rotulan solo los extremos: la lectura es la tendencia, no cada valor.
+    for h in (hs[0], hs[-1]):
+        fila = medios.loc[h]
+        acumulado = 0.0
+        for modelo in BASES_PESOS:
+            valor = fila[modelo]
+            if valor >= 0.12:
+                ax.text(h, acumulado + valor / 2, f"{valor:.2f}",
+                        ha="center", va="center", fontsize=8,
+                        color="white", fontweight="bold", zorder=5)
+            acumulado += valor
+
+    fig.text(
+        0.5, -0.02,
+        "Promedio de los tres cortes. A un mes manda la persistencia; "
+        "a doce, el modelo global y la física.",
+        ha="center", fontsize=8, color=TINTA_3,
+    )
+    fig.tight_layout()
+    return _guardar(fig, "10_pesos_hibrido.png")
+
+
+TODAS_FASE4 = [fig_hibrido_vs_todos, fig_pesos_hibrido]
+
+
+def generar_fase4() -> list[str]:
+    return [f() for f in TODAS_FASE4]
