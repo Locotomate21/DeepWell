@@ -455,6 +455,40 @@ real: es una lista corta y priorizable de campos que merecen revisión.
 | `11_calibracion_intervalos.png` | Cobertura por horizonte y dentro de cada tamaño |
 | `12_validacion_alertas.png` | Qué ocurre después de una alerta |
 
+## Fase 6 (en curso) · Tablero
+
+Primera entrega: la **capa de datos** del tablero y una vista de campo funcional.
+
+```bash
+streamlit run app/tablero.py
+```
+
+El tablero **no reentrena nada**. Consume los pronósticos fuera de muestra que ya
+produjo la Fase 5, así que lo que muestra es exactamente lo que el modelo predijo
+sin haber visto esos meses.
+
+| Componente | Estado |
+|---|---|
+| `oilai/tablero.py` — acceso a datos, sin dependencia de Streamlit | ✅ |
+| Vista de campo: ficha, pronóstico con banda, alertas | ✅ |
+| Lista priorizada de campos que requieren revisión | ✅ |
+| Mapa interactivo y comparador de modelos | pendiente |
+| Informe metodológico final | pendiente |
+
+La lógica vive en `oilai/tablero.py` y la presentación en `app/tablero.py`. Esa
+separación permite probar el comportamiento sin levantar la aplicación, que es
+donde suelen esconderse los errores de un tablero.
+
+Dos decisiones que merecen mención:
+
+- **El origen por defecto no es el más reciente.** Los últimos orígenes solo
+  traen uno o dos horizontes, porque los meses siguientes aún no han ocurrido.
+  Se elige el origen más reciente con la trayectoria completa, que es el que
+  permite ver el pronóstico junto a lo que realmente pasó.
+- **Las alertas se priorizan por barriles perdidos, no por severidad.** Una
+  caída de tres anchuras de intervalo en un campo de 40 bpd importa menos que
+  una leve en uno de 50 000.
+
 ## Instalación
 
 ```bash
@@ -489,7 +523,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 156 pruebas
+python -m pytest    # 171 pruebas
 ```
 
 ## Estructura
@@ -505,6 +539,7 @@ src/oilai/
 ├── features.py         conjunto supervisado causal para el modelo global
 ├── backtest_global.py  protocolo de evaluación con cortes de calendario
 ├── backtest_hibrido.py evaluación de los dos híbridos
+├── tablero.py          capa de datos del tablero
 ├── incertidumbre.py    intervalos: conformal, conformal por clase y cuantílica
 ├── anomalias.py        detección de caídas y su validación
 ├── backtest_incertidumbre.py  particiones disjuntas y evaluación de cobertura
@@ -517,10 +552,11 @@ src/oilai/
     ├── global_ml.py    modelo global de gradient boosting
     └── hibrido.py      Arps como variable y combinación por régimen
 
-tests/                  156 pruebas, incluidas las de ausencia de fuga temporal
+tests/                  171 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
-reports/figures/        figuras generadas por `oilai eda`
+reports/figures/        figuras generadas por el pipeline
+app/tablero.py          interfaz Streamlit
 ```
 
 ## Hoja de ruta
@@ -532,7 +568,7 @@ reports/figures/        figuras generadas por `oilai eda`
 | **3. Modelo global de ML** | Features + LightGBM multi-horizonte sobre todos los campos | ✅ **completa** |
 | **4. Modelo híbrido física + ML** | Arps como variable y combinación por régimen — aporte original | ✅ **completa** |
 | **5. Incertidumbre y anomalías** | Intervalos de predicción, detección de caídas atípicas | ✅ **completa** |
-| 6. Dashboard y entregable | App Streamlit e informe metodológico | pendiente |
+| 6. Dashboard y entregable | App Streamlit e informe metodológico | 🔨 **en curso** |
 
 ## Fuentes
 
