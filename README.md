@@ -472,7 +472,8 @@ sin haber visto esos meses.
 | `oilai/tablero.py` — acceso a datos, sin dependencia de Streamlit | ✅ |
 | Vista de campo: ficha, pronóstico con banda, alertas | ✅ |
 | Lista priorizada de campos que requieren revisión | ✅ |
-| Mapa interactivo y comparador de modelos | pendiente |
+| Mapa interactivo con estado de alerta | ✅ |
+| Comparador de modelos | pendiente |
 | Informe metodológico final | pendiente |
 
 La lógica vive en `oilai/tablero.py` y la presentación en `app/tablero.py`. Esa
@@ -488,6 +489,18 @@ Dos decisiones que merecen mención:
 - **Las alertas se priorizan por barriles perdidos, no por severidad.** Una
   caída de tres anchuras de intervalo en un campo de 40 bpd importa menos que
   una leve en uno de 50 000.
+- **El mapa marca alertas del último mes, no de los últimos seis.** Con una cola
+  del 10 %, la probabilidad de que un campo dispare al menos una alerta en seis
+  meses roza el 50 %: medidos sobre los datos, 157 campos de 294 en rojo frente
+  a 36 con ventana de un mes. El mapa responde a *qué revisar hoy*; para el
+  histórico está la pestaña de alertas.
+- **El mapa usa solo dos colores.** Dibuja todos los campos en el mismo plano, y
+  con las cuatro categorías de segmento la paleta no supera el umbral de
+  discriminación. Codificar el estado, que es binario, sí funciona.
+
+La aplicación se prueba de principio a fin con `AppTest` de Streamlit: que el
+servidor arranque no prueba nada, porque el script solo se ejecuta al abrir una
+sesión.
 
 ## Instalación
 
@@ -523,7 +536,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 171 pruebas
+python -m pytest    # 181 pruebas
 ```
 
 ## Estructura
@@ -552,7 +565,7 @@ src/oilai/
     ├── global_ml.py    modelo global de gradient boosting
     └── hibrido.py      Arps como variable y combinación por régimen
 
-tests/                  171 pruebas, incluidas las de ausencia de fuga temporal
+tests/                  181 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por el pipeline

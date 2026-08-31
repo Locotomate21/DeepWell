@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .clean import build_panel
@@ -199,4 +200,74 @@ def resumen_nacional() -> dict:
         "campos_activos": int(caracterizacion.activo.sum()),
         "campos_totales": int(len(caracterizacion)),
         "alertas_recientes": int(len(recientes)),
+    }
+
+
+# --- Mapa ------------------------------------------------------------------
+
+# Solo dos colores, y a propósito. El mapa dibuja todos los campos en el mismo
+# plano, así que cualquier par de colores debe ser distinguible entre sí; con
+# cuatro categorías —los segmentos de la Fase 2— la paleta no supera el umbral
+# de discriminación. Codificar el estado, que es binario, sí funciona y además
+# responde a la pregunta operativa: dónde hay que mirar hoy.
+COLOR_NORMAL = "#2a78d6"
+COLOR_ALERTA = "#e34948"
+
+# Radio en metros. La raíz cuadrada hace que el ÁREA del círculo sea
+# proporcional a la producción; usar el radio directamente exageraría los campos
+# grandes hasta tapar el mapa.
+ESCALA_RADIO = 90
+RADIO_MIN = 1_500
+RADIO_MAX = 45_000
+
+
+# Ventana por defecto para marcar un campo en alerta dentro del mapa. Un mes,
+# no seis: con una cola del 10 %, la probabilidad de que un campo dispare al
+# menos una alerta en seis meses roza el 50 %, y medio mapa sale en rojo. Medido
+# sobre los datos: 157 de 294 campos con ventana de seis meses frente a 36 con
+# ventana de uno. El mapa responde a "qué revisar hoy", no a "qué falló alguna
+# vez este semestre"; para lo segundo está la pestaña de alertas.
+MESES_ALERTA_MAPA = 1
+
+
+def mapa_campos(
+    solo_activos: bool = True,
+    meses_alerta: int = MESES_ALERTA_MAPA,
+    caracterizacion: pd.DataFrame | None = None,
+    alertas: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Campos georreferenciados, con su estado de alerta y tamaño de dibujo."""
+    d = caracterizar_campos() if caracterizacion is None else caracterizacion
+    d = d[d.latitud.notna() & d.longitud.notna()].copy()
+
+    if solo_activos:
+        d = d[d.activo]
+
+    recientes = alertas_recientes(meses=meses_alerta, alertas=alertas)
+    en_alerta = set(recientes.campo) if not recientes.empty else set()
+
+    d["en_alerta"] = d.campo.isin(en_alerta)
+    d["color"] = np.where(d.en_alerta, COLOR_ALERTA, COLOR_NORMAL)
+    d["radio"] = np.clip(
+        np.sqrt(d.bpd_ultimo.clip(lower=0)) * ESCALA_RADIO, RADIO_MIN, RADIO_MAX
+    )
+
+    columnas = [
+        "campo", "latitud", "longitud", "bpd_ultimo", "operadora",
+        "departamento", "en_alerta", "color", "radio",
+    ]
+    return d[columnas].sort_values("bpd_ultimo", ascending=False).reset_index(drop=True)
+
+
+def resumen_mapa(mapa: pd.DataFrame) -> dict:
+    """Cifras de cabecera de la vista de mapa."""
+    if mapa.empty:
+        return {"campos": 0, "en_alerta": 0, "bpd_total": 0.0, "bpd_en_alerta": 0.0}
+
+    alerta = mapa[mapa.en_alerta]
+    return {
+        "campos": int(len(mapa)),
+        "en_alerta": int(len(alerta)),
+        "bpd_total": float(mapa.bpd_ultimo.sum()),
+        "bpd_en_alerta": float(alerta.bpd_ultimo.sum()),
     }

@@ -5,6 +5,8 @@ genera el pipeline: la lógica debe ser correcta también en un repositorio reci
 clonado, y las pruebas no deben tardar minutos.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -213,3 +215,143 @@ def test_un_artefacto_ausente_da_un_mensaje_accionable(tmp_path, monkeypatch):
 
     with pytest.raises(ArtefactoFaltante, match="oilai all"):
         _exigir("intervalos")
+
+
+# --- Mapa ------------------------------------------------------------------
+
+
+def _caracterizacion() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "campo": ["GRANDE", "CHICO", "CERRADO", "SIN_COORD"],
+            "latitud": [3.8, 6.0, 4.5, np.nan],
+            "longitud": [-71.5, -73.0, -72.0, -74.0],
+            "bpd_ultimo": [90_000.0, 100.0, 500.0, 700.0],
+            "operadora": "ECOPETROL S.A.",
+            "departamento": "META",
+            "activo": [True, True, False, True],
+        }
+    )
+
+
+def _alertas_mapa() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "campo": ["GRANDE"],
+            "fecha_objetivo": [pd.Timestamp("2026-02-01")],
+            "clase": [">50k"],
+            "y": [80_000.0],
+            "lo": [85_000.0],
+            "punto": [90_000.0],
+            "severidad": [0.5],
+            "anomalia_baja": [True],
+        }
+    )
+
+
+def _mapa(**kwargs):
+    from oilai.tablero import mapa_campos
+
+    return mapa_campos(
+        caracterizacion=_caracterizacion(), alertas=_alertas_mapa(), **kwargs
+    )
+
+
+def test_el_mapa_excluye_campos_sin_coordenadas():
+    m = _mapa()
+
+    assert "SIN_COORD" not in set(m.campo)
+
+
+def test_el_mapa_puede_excluir_campos_cerrados():
+    activos = _mapa(solo_activos=True)
+    todos = _mapa(solo_activos=False)
+
+    assert "CERRADO" not in set(activos.campo)
+    assert "CERRADO" in set(todos.campo)
+
+
+def test_el_area_del_circulo_es_proporcional_a_la_produccion():
+    """Usar el radio directamente exageraría los campos grandes."""
+    from oilai.tablero import ESCALA_RADIO, RADIO_MAX, RADIO_MIN
+
+    m = _mapa(solo_activos=False).set_index("campo")
+    esperado = np.clip(np.sqrt(500.0) * ESCALA_RADIO, RADIO_MIN, RADIO_MAX)
+
+    assert m.loc["CERRADO", "radio"] == pytest.approx(esperado)
+
+
+def test_el_radio_esta_acotado_por_arriba_y_por_abajo():
+    from oilai.tablero import RADIO_MAX, RADIO_MIN
+
+    m = _mapa(solo_activos=False)
+
+    assert m.radio.min() >= RADIO_MIN
+    assert m.radio.max() <= RADIO_MAX
+
+
+def test_el_color_distingue_los_campos_en_alerta():
+    from oilai.tablero import COLOR_ALERTA, COLOR_NORMAL
+
+    m = _mapa().set_index("campo")
+
+    assert m.loc["GRANDE", "en_alerta"]
+    assert m.loc["GRANDE", "color"] == COLOR_ALERTA
+    assert not m.loc["CHICO", "en_alerta"]
+    assert m.loc["CHICO", "color"] == COLOR_NORMAL
+
+
+def test_el_mapa_solo_usa_dos_colores():
+    """Con cuatro categorías la paleta no supera el umbral de discriminación."""
+    m = _mapa(solo_activos=False)
+
+    assert m.color.nunique() <= 2
+
+
+def test_el_mapa_se_ordena_por_produccion():
+    m = _mapa()
+
+    assert m.bpd_ultimo.is_monotonic_decreasing
+
+
+def test_el_resumen_del_mapa_cuenta_produccion_en_alerta():
+    from oilai.tablero import resumen_mapa
+
+    m = _mapa()
+    r = resumen_mapa(m)
+
+    assert r["campos"] == 2
+    assert r["en_alerta"] == 1
+    assert r["bpd_en_alerta"] == pytest.approx(90_000.0)
+    assert r["bpd_total"] == pytest.approx(90_100.0)
+
+
+def test_el_resumen_de_un_mapa_vacio_no_falla():
+    from oilai.tablero import resumen_mapa
+
+    r = resumen_mapa(pd.DataFrame())
+
+    assert r["campos"] == 0 and r["bpd_total"] == 0.0
+
+
+# --- Prueba de humo de la aplicación ---------------------------------------
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[1] / "reports" / "intervalos.parquet").exists(),
+    reason="requiere los artefactos del pipeline (`oilai all`)",
+)
+def test_la_aplicacion_se_ejecuta_sin_excepciones():
+    """Ejecuta el script de Streamlit de principio a fin.
+
+    Que el servidor arranque no prueba nada: el script solo corre cuando se abre
+    una sesión. `AppTest` sí lo ejecuta y recoge cualquier excepción, que es la
+    única forma de detectar que una vista está rota sin abrir el navegador.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    ruta = Path(__file__).resolve().parents[1] / "app" / "tablero.py"
+    app = AppTest.from_file(str(ruta), default_timeout=300).run()
+
+    assert not app.exception, [str(e.value) for e in app.exception]
+    assert app.title[0].value.startswith("DeepWell")

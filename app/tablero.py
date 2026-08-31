@@ -55,6 +55,13 @@ def _resumen() -> dict:
     return tablero.resumen_nacional()
 
 
+@st.cache_data(show_spinner=False)
+def _mapa(meses: int, solo_activos: bool) -> pd.DataFrame:
+    return tablero.mapa_campos(
+        solo_activos=solo_activos, meses_alerta=meses, alertas=_alertas()
+    )
+
+
 def grafica_campo(historia: pd.DataFrame, pron: pd.DataFrame, campo: str):
     """Historia observada y pronóstico fuera de muestra con su banda."""
     _estilo()
@@ -144,7 +151,7 @@ def vista_campo() -> None:
                 }
             ),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -172,8 +179,60 @@ def vista_alertas() -> None:
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=460,
+    )
+
+
+def vista_mapa() -> None:
+    st.subheader("Dónde están los campos y cuáles fallan")
+
+    controles = st.columns([1, 1, 2])
+    meses = controles[0].slider(
+        "Ventana de alerta (meses)", 1, 6, tablero.MESES_ALERTA_MAPA,
+        help="Con seis meses más de la mitad de los campos ha disparado alguna "
+             "alerta y el mapa deja de servir para priorizar.",
+    )
+    solo_activos = controles[1].toggle("Solo campos activos", value=True)
+
+    mapa = _mapa(meses, solo_activos)
+    if mapa.empty:
+        st.info("No hay campos con coordenadas para mostrar.")
+        return
+
+    resumen = tablero.resumen_mapa(mapa)
+    cols = st.columns(4)
+    cols[0].metric("Campos en el mapa", f"{resumen['campos']}")
+    cols[1].metric("En alerta", f"{resumen['en_alerta']}")
+    cols[2].metric("Producción representada", f"{resumen['bpd_total']:,.0f} bpd")
+    cols[3].metric("Producción en alerta", f"{resumen['bpd_en_alerta']:,.0f} bpd")
+
+    st.map(
+        mapa,
+        latitude="latitud",
+        longitude="longitud",
+        color="color",
+        size="radio",
+        height=520,
+    )
+    st.caption(
+        "El área del círculo es proporcional a la producción actual. "
+        "En rojo, los campos con una caída por debajo de su intervalo de "
+        "predicción dentro de la ventana elegida."
+    )
+
+    en_alerta = mapa[mapa.en_alerta]
+    if en_alerta.empty:
+        st.success("Ningún campo en alerta en la ventana seleccionada.")
+        return
+
+    st.markdown(f"**{len(en_alerta)} campos en alerta**")
+    st.dataframe(
+        en_alerta[["campo", "operadora", "departamento", "bpd_ultimo"]].rename(
+            columns={"bpd_ultimo": "producción actual (bpd)"}
+        ),
+        hide_index=True,
+        width="stretch",
     )
 
 
@@ -197,7 +256,9 @@ def main() -> None:
 
     st.divider()
 
-    campo, alertas = st.tabs(["Vista de campo", "Alertas"])
+    mapa, campo, alertas = st.tabs(["Mapa", "Vista de campo", "Alertas"])
+    with mapa:
+        vista_mapa()
     with campo:
         vista_campo()
     with alertas:
