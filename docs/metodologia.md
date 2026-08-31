@@ -761,7 +761,7 @@ lista corta y priorizable de campos que merecen revisión.
 ```bash
 python -m pip install -e ".[dev]"
 oilai all --force      # reconstruye todo desde el snapshot versionado
-python -m pytest       # 181 pruebas
+python -m pytest       # 194 pruebas
 ```
 
 Las semillas aleatorias están fijadas en las pruebas que las requieren. El

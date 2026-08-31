@@ -355,3 +355,159 @@ def test_la_aplicacion_se_ejecuta_sin_excepciones():
 
     assert not app.exception, [str(e.value) for e in app.exception]
     assert app.title[0].value.startswith("DeepWell")
+
+
+# --- Comparador de modelos -------------------------------------------------
+
+
+def _comparativa(campos=("A", "B"), modelos=("Naive", "ML-global", "Híbrido-regimen")):
+    filas = []
+    for campo in campos:
+        for origen in (pd.Timestamp("2024-03-01"), pd.Timestamp("2025-03-01")):
+            for h in range(1, 13):
+                real = 1000.0 - h * 5
+                for i, modelo in enumerate(modelos):
+                    filas.append(
+                        {
+                            "campo": campo,
+                            "origen": origen,
+                            "h": h,
+                            "y": real,
+                            # El primer modelo acierta; los demás se equivocan
+                            # progresivamente más.
+                            "yhat": real + i * 20,
+                            "escala": 10.0,
+                            "clase": "0.5-5k",
+                            "modelo": modelo,
+                        }
+                    )
+    return pd.DataFrame(filas)
+
+
+def test_los_modelos_sugeridos_van_primero():
+    from oilai.tablero import MODELOS_SUGERIDOS, modelos_disponibles
+
+    datos = _comparativa(modelos=("Arps-24m", "Naive", "ML-global", "Híbrido-regimen"))
+
+    orden = modelos_disponibles(datos)
+
+    assert orden[: len(MODELOS_SUGERIDOS)] == MODELOS_SUGERIDOS
+    assert set(orden) == set(datos.modelo.unique())
+
+
+def test_el_ranking_ordena_del_mejor_al_peor():
+    from oilai.tablero import ranking_modelos
+
+    tabla = ranking_modelos(_comparativa())
+
+    assert tabla.index[0] == "Naive"  # el que acierta en los datos sintéticos
+    assert tabla.MASE.is_monotonic_increasing
+
+
+def test_el_mase_por_horizonte_cubre_todos_los_horizontes():
+    from oilai.tablero import mase_por_horizonte
+
+    piv = mase_por_horizonte(_comparativa())
+
+    assert list(piv.columns) == list(range(1, 13))
+    assert piv.loc["Naive"].sum() == pytest.approx(0.0)
+
+
+def test_las_trayectorias_traen_una_columna_por_modelo():
+    from oilai.tablero import trayectorias
+
+    datos = _comparativa()
+    tray = trayectorias("A", datos=datos)
+
+    assert len(tray) == 12
+    for modelo in datos.modelo.unique():
+        assert modelo in tray.columns
+    assert "y" in tray.columns
+
+
+def test_las_trayectorias_usan_el_origen_mas_reciente():
+    from oilai.tablero import trayectorias
+
+    tray = trayectorias("A", datos=_comparativa())
+
+    assert tray.attrs["origen"] == pd.Timestamp("2025-03-01")
+
+
+def test_se_puede_comparar_en_un_origen_concreto():
+    from oilai.tablero import trayectorias
+
+    origen = pd.Timestamp("2024-03-01")
+    tray = trayectorias("A", origen=origen, datos=_comparativa())
+
+    assert tray.attrs["origen"] == origen
+
+
+def test_un_campo_sin_comparacion_devuelve_tabla_vacia():
+    from oilai.tablero import error_por_modelo, trayectorias
+
+    datos = _comparativa()
+
+    assert trayectorias("INEXISTENTE", datos=datos).empty
+    assert error_por_modelo("INEXISTENTE", datos=datos).empty
+
+
+def test_el_error_por_campo_identifica_al_mejor_modelo():
+    from oilai.tablero import error_por_modelo
+
+    tabla = error_por_modelo("A", datos=_comparativa())
+
+    assert tabla.index[0] == "Naive"
+    assert tabla.loc["Naive", "MAE_bpd"] == pytest.approx(0.0)
+    assert tabla.MASE.is_monotonic_increasing
+
+
+def test_el_sesgo_conserva_el_signo():
+    """Los modelos sintéticos sobreestiman: el sesgo debe salir positivo."""
+    from oilai.tablero import error_por_modelo
+
+    tabla = error_por_modelo("A", datos=_comparativa())
+
+    assert tabla.loc["ML-global", "sesgo_bpd"] > 0
+
+
+def test_el_tope_de_modelos_graficados_es_tres():
+    """En un mismo plano la paleta solo garantiza tres colores distinguibles."""
+    from oilai.tablero import MAX_MODELOS_GRAFICA
+
+    assert MAX_MODELOS_GRAFICA == 3
+
+
+def test_los_campos_comparables_vienen_ordenados():
+    from oilai.tablero import campos_comparables
+
+    campos = campos_comparables(_comparativa(campos=("Z", "A", "M")))
+
+    assert campos == ["A", "M", "Z"]
+
+
+def test_un_horizonte_sin_dato_queda_como_hueco_explicito():
+    """Sin esto la gráfica une los vecinos con una recta e inventa un valor.
+
+    Ocurre de verdad: noviembre de 2025 es un mes de publicación incompleta de
+    la ANH, y los campos que no reportaron se quedan sin objetivo en el
+    horizonte que apunta a ese mes.
+    """
+    from oilai.tablero import trayectorias
+
+    datos = _comparativa()
+    sin_h8 = datos[datos.h != 8]
+
+    tray = trayectorias("A", datos=sin_h8)
+
+    assert list(tray.h) == list(range(1, 13))  # el horizonte sigue completo
+    assert tray.loc[tray.h == 8, "y"].isna().all()
+    assert tray.loc[tray.h == 7, "y"].notna().all()
+
+
+def test_las_trayectorias_no_inventan_horizontes_de_mas():
+    from oilai.tablero import trayectorias
+
+    tray = trayectorias("A", datos=_comparativa())
+
+    assert tray.h.max() == 12
+    assert tray.y.notna().all()

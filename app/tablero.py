@@ -56,6 +56,11 @@ def _resumen() -> dict:
 
 
 @st.cache_data(show_spinner=False)
+def _comparativa() -> pd.DataFrame:
+    return tablero.cargar_comparativa()
+
+
+@st.cache_data(show_spinner=False)
 def _mapa(meses: int, solo_activos: bool) -> pd.DataFrame:
     return tablero.mapa_campos(
         solo_activos=solo_activos, meses_alerta=meses, alertas=_alertas()
@@ -184,6 +189,115 @@ def vista_alertas() -> None:
     )
 
 
+def grafica_mase(piv: pd.DataFrame, modelos: list[str]):
+    """MASE por horizonte de los modelos seleccionados."""
+    _estilo()
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    hs = list(piv.columns)
+
+    for modelo, color in zip(modelos, SERIE):
+        if modelo not in piv.index:
+            continue
+        ax.plot(hs, piv.loc[modelo], color=color, label=modelo, zorder=3,
+                marker="o", markersize=4.5,
+                markeredgecolor=SUPERFICIE, markeredgewidth=1.2)
+
+    ax.axhline(1.0, color=TINTA_3, lw=1, ls=":", zorder=2)
+    _limpiar(ax)
+    ax.set_xticks(hs)
+    ax.set_xlabel("horizonte (meses)")
+    ax.set_ylabel("MASE")
+    ax.set_title("Error según el horizonte")
+    ax.legend(frameon=False, fontsize=8.5, loc="upper left")
+    fig.tight_layout()
+    return fig
+
+
+def grafica_trayectorias(tray: pd.DataFrame, modelos: list[str], campo: str):
+    """Lo que cada modelo predijo frente a lo que realmente ocurrió."""
+    _estilo()
+    fig, ax = plt.subplots(figsize=(9, 4.0))
+
+    # El valor real va en tinta neutra, no en un color de serie: no es un
+    # modelo más, es la referencia contra la que se miden todos.
+    ax.plot(tray.h, tray.y, color=TINTA_2, lw=2.4, zorder=6,
+            marker="o", markersize=5, markeredgecolor=SUPERFICIE,
+            markeredgewidth=1.2, label="producción real")
+
+    for modelo, color in zip(modelos, SERIE):
+        if modelo not in tray.columns:
+            continue
+        ax.plot(tray.h, tray[modelo], color=color, lw=1.9, ls="--", zorder=4,
+                label=modelo)
+
+    _limpiar(ax)
+    ax.yaxis.set_major_formatter(FuncFormatter(_miles))
+    ax.set_xticks(tray.h)
+    ax.set_xlabel("meses desde el origen del pronóstico")
+    ax.set_ylabel("barriles por día")
+    ax.set_title(f"{campo.title()} — pronóstico de cada modelo")
+    ax.legend(frameon=False, fontsize=8.5, loc="best", ncol=2)
+    fig.tight_layout()
+    return fig
+
+
+def vista_comparador() -> None:
+    st.subheader("Qué modelo conviene y cuándo")
+
+    datos = _comparativa()
+    disponibles = tablero.modelos_disponibles(datos)
+
+    st.markdown("**Todos los modelos, sobre los mismos campos y horizontes**")
+    st.dataframe(
+        tablero.ranking_modelos(datos).round(3).reset_index(),
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption(
+        "Protocolo de calendario de la Fase 3: mismos campos, mismos orígenes y "
+        "mismos horizontes para todos. MASE menor es mejor."
+    )
+
+    seleccion = st.multiselect(
+        "Modelos a graficar",
+        disponibles,
+        default=disponibles[: tablero.MAX_MODELOS_GRAFICA],
+        max_selections=tablero.MAX_MODELOS_GRAFICA,
+        help="Hasta tres: en un mismo plano la paleta solo garantiza que los "
+             "colores se distingan entre sí hasta ese número.",
+    )
+    if not seleccion:
+        st.info("Selecciona al menos un modelo.")
+        return
+
+    st.pyplot(grafica_mase(tablero.mase_por_horizonte(datos), seleccion))
+
+    st.divider()
+    st.markdown("**Comparación sobre un campo concreto**")
+
+    campos = tablero.campos_comparables(datos)
+    campo = st.selectbox("Campo a comparar", campos,
+                         index=campos.index("RUBIALES") if "RUBIALES" in campos else 0)
+
+    tray = tablero.trayectorias(campo, datos=datos)
+    if tray.empty:
+        st.info("Este campo no tiene comparación almacenada.")
+        return
+
+    st.caption(f"Origen del pronóstico: {tray.attrs['origen']:%Y-%m}")
+    st.pyplot(grafica_trayectorias(tray, seleccion, campo))
+
+    st.dataframe(
+        tablero.error_por_modelo(campo, datos=datos).round(2).reset_index(),
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption(
+        "El orden dentro de un campo no tiene por qué coincidir con el global: "
+        "el ranking agregado es un promedio sobre 336 campos."
+    )
+
+
 def vista_mapa() -> None:
     st.subheader("Dónde están los campos y cuáles fallan")
 
@@ -256,13 +370,17 @@ def main() -> None:
 
     st.divider()
 
-    mapa, campo, alertas = st.tabs(["Mapa", "Vista de campo", "Alertas"])
+    mapa, campo, alertas, comparador = st.tabs(
+        ["Mapa", "Vista de campo", "Alertas", "Comparador de modelos"]
+    )
     with mapa:
         vista_mapa()
     with campo:
         vista_campo()
     with alertas:
         vista_alertas()
+    with comparador:
+        vista_comparador()
 
     st.sidebar.divider()
     st.sidebar.caption(

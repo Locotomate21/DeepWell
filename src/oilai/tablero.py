@@ -29,6 +29,7 @@ ARTEFACTOS = {
     "intervalos": REPORTS / "intervalos.parquet",
     "alertas": REPORTS / "alertas.parquet",
     "segmentos": REPORTS / "perfil_segmentos.csv",
+    "comparativa": REPORTS / "backtest_hibrido.parquet",
 }
 
 
@@ -271,3 +272,117 @@ def resumen_mapa(mapa: pd.DataFrame) -> dict:
         "bpd_total": float(mapa.bpd_ultimo.sum()),
         "bpd_en_alerta": float(alerta.bpd_ultimo.sum()),
     }
+
+
+# --- Comparador de modelos -------------------------------------------------
+
+# Máximo de modelos superpuestos en una misma gráfica. No es una preferencia
+# estética: en un solo plano todos los pares de colores deben distinguirse
+# entre sí, y la paleta validada solo garantiza esa separación hasta tres.
+# Con más, la identidad pasaría a depender de adivinar el tono.
+MAX_MODELOS_GRAFICA = 3
+
+# Orden de preferencia al proponer una selección inicial: el híbrido ganador,
+# el mejor modelo puro y la referencia que hay que batir.
+MODELOS_SUGERIDOS = ["Híbrido-regimen", "ML-global", "Naive"]
+
+
+def cargar_comparativa() -> pd.DataFrame:
+    """Predicciones de todos los modelos bajo el protocolo de calendario."""
+    return pd.read_parquet(_exigir("comparativa"))
+
+
+def modelos_disponibles(datos: pd.DataFrame | None = None) -> list[str]:
+    """Modelos del benchmark, con los sugeridos al principio."""
+    df = cargar_comparativa() if datos is None else datos
+    presentes = set(df.modelo.unique())
+
+    orden = [m for m in MODELOS_SUGERIDOS if m in presentes]
+    orden += sorted(presentes - set(orden))
+    return orden
+
+
+def ranking_modelos(datos: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Tabla comparativa global, con las mismas métricas del benchmark."""
+    from .evaluate import resumen
+
+    df = cargar_comparativa() if datos is None else datos
+    return resumen(df)
+
+
+def mase_por_horizonte(datos: pd.DataFrame | None = None) -> pd.DataFrame:
+    """MASE medio de cada modelo en cada horizonte."""
+    df = cargar_comparativa() if datos is None else datos
+    d = df.assign(mase=lambda x: (x.y - x.yhat).abs() / x.escala)
+    return d.pivot_table(index="modelo", columns="h", values="mase", aggfunc="mean")
+
+
+def campos_comparables(datos: pd.DataFrame | None = None) -> list[str]:
+    """Campos con predicciones de todos los modelos."""
+    df = cargar_comparativa() if datos is None else datos
+    return sorted(df.campo.unique())
+
+
+def trayectorias(
+    campo: str,
+    origen: pd.Timestamp | None = None,
+    datos: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Lo que cada modelo predijo para un campo, junto al valor real.
+
+    Formato ancho: una fila por horizonte, una columna por modelo, más `y`.
+    """
+    df = cargar_comparativa() if datos is None else datos
+    g = df[df.campo == campo]
+    if g.empty:
+        return pd.DataFrame()
+
+    origen = g.origen.max() if origen is None else pd.Timestamp(origen)
+    g = g[g.origen == origen]
+
+    ancho = g.pivot_table(index="h", columns="modelo", values="yhat")
+    ancho.insert(0, "y", g.groupby("h").y.first())
+
+    # Se reindexa al horizonte completo para que un mes sin dato quede como
+    # hueco explícito. Sin esto la gráfica une los puntos vecinos con una recta
+    # y sugiere un valor que no existe: es justo lo que pasa con noviembre de
+    # 2025, el mes de publicación incompleta de la ANH, que deja sin objetivo a
+    # los campos que no reportaron.
+    completo = range(1, int(df.h.max()) + 1)
+    salida = ancho.reindex(completo).rename_axis("h").reset_index()
+
+    salida.attrs["origen"] = origen
+    return salida
+
+
+def error_por_modelo(
+    campo: str,
+    origen: pd.Timestamp | None = None,
+    datos: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Error de cada modelo sobre un campo concreto, del mejor al peor."""
+    df = cargar_comparativa() if datos is None else datos
+    g = df[df.campo == campo]
+    if g.empty:
+        return pd.DataFrame()
+
+    if origen is not None:
+        g = g[g.origen == pd.Timestamp(origen)]
+
+    g = g.assign(
+        ae=lambda x: (x.y - x.yhat).abs(),
+        se=lambda x: (x.y - x.yhat) ** 2,
+    )
+
+    tabla = g.groupby("modelo").apply(
+        lambda x: pd.Series(
+            {
+                "MAE_bpd": x.ae.mean(),
+                "RMSE_bpd": np.sqrt(x.se.mean()),
+                "MASE": (x.ae / x.escala).mean(),
+                "sesgo_bpd": (x.yhat - x.y).mean(),
+            }
+        ),
+        include_groups=False,
+    )
+    return tabla.sort_values("MASE")

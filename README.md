@@ -473,7 +473,7 @@ sin haber visto esos meses.
 | Vista de campo: ficha, pronóstico con banda, alertas | ✅ |
 | Lista priorizada de campos que requieren revisión | ✅ |
 | Mapa interactivo con estado de alerta | ✅ |
-| Comparador de modelos | pendiente |
+| Comparador de modelos | ✅ |
 | Informe metodológico final | pendiente |
 
 La lógica vive en `oilai/tablero.py` y la presentación en `app/tablero.py`. Esa
@@ -497,6 +497,15 @@ Dos decisiones que merecen mención:
 - **El mapa usa solo dos colores.** Dibuja todos los campos en el mismo plano, y
   con las cuatro categorías de segmento la paleta no supera el umbral de
   discriminación. Codificar el estado, que es binario, sí funciona.
+
+- **El comparador grafica como máximo tres modelos a la vez.** En un mismo
+  plano todos los pares de colores deben distinguirse entre sí, y la paleta
+  validada solo lo garantiza hasta tres; con más, la identidad dependería de
+  adivinar el tono. Los cinco siguen apareciendo en las tablas.
+- **Un horizonte sin dato se dibuja como hueco, no se interpola.** Ocurre de
+  verdad: el horizonte que apunta a noviembre de 2025 —el mes de publicación
+  incompleta de la ANH— no tiene valor real en los campos que no reportaron.
+  Unir los puntos vecinos con una recta inventaría un dato.
 
 La aplicación se prueba de principio a fin con `AppTest` de Streamlit: que el
 servidor arranque no prueba nada, porque el script solo se ejecuta al abrir una
@@ -536,7 +545,7 @@ recalcula lo que falte.
 Pruebas:
 
 ```bash
-python -m pytest    # 181 pruebas
+python -m pytest    # 194 pruebas
 ```
 
 ## Estructura
@@ -565,7 +574,7 @@ src/oilai/
     ├── global_ml.py    modelo global de gradient boosting
     └── hibrido.py      Arps como variable y combinación por régimen
 
-tests/                  181 pruebas, incluidas las de ausencia de fuga temporal
+tests/                  194 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por el pipeline
