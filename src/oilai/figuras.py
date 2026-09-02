@@ -665,7 +665,61 @@ def fig_pesos_hibrido() -> str:
     return _guardar(fig, "10_pesos_hibrido.png")
 
 
-TODAS_FASE4 = [fig_hibrido_vs_todos, fig_pesos_hibrido]
+def fig_sintesis() -> str:
+    """La figura de cierre: qué se ganó y frente a qué.
+
+    Serie única, así que no hace falta codificar nada por color. Se destaca el
+    modelo ganador y el resto queda en un tono recesivo: el contraste dirige la
+    lectura sin introducir una escala categórica que no aporta.
+    """
+    _estilo()
+    from .config import REPORTS
+    from .evaluate import resumen
+
+    df = pd.read_parquet(REPORTS / "backtest_hibrido.parquet")
+    tabla = resumen(df).sort_values("MASE", ascending=False)
+
+    ganador = tabla.MASE.idxmin()
+    referencia = tabla.loc["Naive", "MASE"] if "Naive" in tabla.index else None
+
+    colores = [SERIE[0] if m == ganador else "#c9c8c2" for m in tabla.index]
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.0))
+    barras = ax.barh(tabla.index, tabla.MASE, color=colores, height=0.66,
+                     zorder=3, edgecolor=SUPERFICIE, linewidth=1.2)
+
+    for barra, (modelo, fila) in zip(barras, tabla.iterrows()):
+        texto = f" {fila.MASE:.3f}"
+        if referencia is not None and modelo != "Naive":
+            texto += f"  ({(1 - fila.MASE / referencia) * 100:+.1f}% vs Naive)"
+        ax.annotate(
+            texto, xy=(fila.MASE, barra.get_y() + barra.get_height() / 2),
+            xytext=(4, 0), textcoords="offset points", va="center",
+            fontsize=8.5, color=TINTA if modelo == ganador else TINTA_2,
+            fontweight="bold" if modelo == ganador else "normal",
+        )
+
+    if referencia is not None:
+        ax.axvline(referencia, color=TINTA_3, lw=1, ls="--", zorder=4)
+
+    _limpiar(ax, eje_y=False)
+    ax.set_xlim(0, tabla.MASE.max() * 1.42)
+    ax.set_xlabel("MASE (menor es mejor)")
+    ax.set_title("Resultado final: el híbrido por régimen es el mejor modelo")
+
+    # El pie va fuera del área de datos: dentro pisaba la última barra.
+    fig.text(
+        0.5, -0.02,
+        f"{len(df):,} predicciones · {df.campo.nunique()} campos · "
+        f"{df.origen.nunique()} cortes de calendario. "
+        "La línea discontinua marca el pronóstico ingenuo.",
+        ha="center", fontsize=8, color=TINTA_3,
+    )
+    fig.tight_layout()
+    return _guardar(fig, "13_sintesis_modelos.png")
+
+
+TODAS_FASE4 = [fig_hibrido_vs_todos, fig_pesos_hibrido, fig_sintesis]
 
 
 def generar_fase4() -> list[str]:

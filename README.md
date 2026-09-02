@@ -4,6 +4,10 @@ Pronóstico de producción de los campos petroleros de Colombia combinando
 **modelos físicos de declinación** (Arps) con **aprendizaje automático**, sobre
 datos oficiales de la Agencia Nacional de Hidrocarburos (ANH).
 
+> 📄 **[Informe final](docs/informe.md)** — qué se encontró, qué se entrega y qué
+> queda abierto. Las decisiones metodológicas y su justificación están en
+> [docs/metodologia.md](docs/metodologia.md).
+
 ## Pregunta de investigación
 
 En la industria, el estándar para pronosticar producción es el *análisis de
@@ -454,10 +458,12 @@ real: es una lista corta y priorizable de campos que merecen revisión.
 |---|---|
 | `11_calibracion_intervalos.png` | Cobertura por horizonte y dentro de cada tamaño |
 | `12_validacion_alertas.png` | Qué ocurre después de una alerta |
+| `13_sintesis_modelos.png` | Resultado final: todos los modelos en una escala |
 
-## Fase 6 (en curso) · Tablero
+## Fase 6 · Tablero e informe
 
-Primera entrega: la **capa de datos** del tablero y una vista de campo funcional.
+Aplicación con cuatro vistas sobre los pronósticos ya producidos, y el informe
+que sintetiza el proyecto: **[docs/informe.md](docs/informe.md)**.
 
 ```bash
 streamlit run app/tablero.py
@@ -474,7 +480,7 @@ sin haber visto esos meses.
 | Lista priorizada de campos que requieren revisión | ✅ |
 | Mapa interactivo con estado de alerta | ✅ |
 | Comparador de modelos | ✅ |
-| Informe metodológico final | pendiente |
+| Informe final | ✅ |
 
 La lógica vive en `oilai/tablero.py` y la presentación en `app/tablero.py`. Esa
 separación permite probar el comportamiento sin levantar la aplicación, que es
@@ -576,6 +582,7 @@ src/oilai/
 
 tests/                  194 pruebas, incluidas las de ausencia de fuga temporal
 docs/metodologia.md     decisiones metodológicas y su justificación
+docs/informe.md         informe final: resultados, hallazgos y limitaciones
 data/raw/               snapshot versionado de los datos de la ANH
 reports/figures/        figuras generadas por el pipeline
 app/tablero.py          interfaz Streamlit
@@ -590,7 +597,7 @@ app/tablero.py          interfaz Streamlit
 | **3. Modelo global de ML** | Features + LightGBM multi-horizonte sobre todos los campos | ✅ **completa** |
 | **4. Modelo híbrido física + ML** | Arps como variable y combinación por régimen — aporte original | ✅ **completa** |
 | **5. Incertidumbre y anomalías** | Intervalos de predicción, detección de caídas atípicas | ✅ **completa** |
-| 6. Dashboard y entregable | App Streamlit e informe metodológico | 🔨 **en curso** |
+| **6. Dashboard y entregable** | App Streamlit e informe final | ✅ **completa** |
 
 ## Fuentes
 
